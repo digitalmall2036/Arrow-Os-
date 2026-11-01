@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Arrow Os</string>
+    <string name="home_tagline">Start with \"tap\" or \"search\": \"tap open YouTube\", \"search Tom and Jerry\"</string>
+    <string name="open_app">Open %1$s</string>
+    <string name="back">Back</string>
+    <string name="home">Home</string>
+    <string name="reload">Reload</string>
+    <string name="mic">Microphone on or off</string>
+    <string name="send">Run command</string>
+    <string name="type_hint">tap … or search …</string>
+
+    <string name="voice_hint">Say or type \"tap …\" or \"search …\". Say \"tap help\" for ideas.</string>
+    <string name="voice_listening">Listening…</string>
+    <string name="voice_off">Voice is off. Tap the mic to turn it on.</string>
+    <string name="voice_permission_denied">Arrow Os needs the microphone for voice control. Tap the mic to try again.</string>
+    <string name="voice_unavailable">Voice recognition is not available on this phone. Install or enable the Google app.</string>
+
+    <string name="say_opening">Opening %1$s</string>
+    <string name="say_searching">Searching %1$s on %2$s</string>
+    <string name="say_back">Going back</string>
+    <string name="say_home">Going home</string>
+    <string name="say_reload">Reloading</string>
+    <string name="say_stop">Voice off</string>
+    <string name="say_ignored">\"%1$s\" isn\'t a command. Start with \"tap\" or \"search\".</string>
+
+    <string name="scanning">Scanning the page for \"%1$s\"…</string>
+    <string name="tapped">Tapped: %1$s</string>
+    <string name="not_found">Nothing on this page matches \"%1$s\"</string>
+
+    <string name="say_searching_web">Searching the web for %1$s</string>
+    <string name="trying_other_address">Couldn\'t connect. Trying %1$s…</string>
+    <string name="error_title">Can\'t reach %1$s</string>
+    <string name="error_facebook_blocked">Your internet connection refused every Facebook address Arrow Os tried. This usually means the network or internet provider blocks Facebook (some countries do this, and then a VPN is needed). Check whether facebook.com opens in Chrome on this phone. If it doesn\'t, the block is on the network, not in Arrow Os.</string>
+    <string name="error_blocked">Your internet connection refused %1$s. The site may be down, or blocked by your network.</string>
+    <string name="error_generic">The page didn\'t load: %1$s</string>
+    <string name="retry">Try again</string>
+</resources>

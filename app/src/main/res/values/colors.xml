@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_dark">#0B0F1A</color>
+    <color name="bg_panel">#151B2B</color>
+    <color name="accent">#00D1FF</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#9AA4BF</color>
+    <color name="mic_on">#00D1FF</color>
+    <color name="mic_off">#6B7590</color>
+</resources>
