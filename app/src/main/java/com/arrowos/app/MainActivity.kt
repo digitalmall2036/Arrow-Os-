@@ -8,6 +8,8 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
@@ -25,6 +27,7 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
@@ -45,6 +48,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     /** The user turned the mic off with the button; don't auto-restart it on resume. */
     private var userMuted = false
 
+    private lateinit var web: WebActions
+    private val handler = Handler(Looper.getMainLooper())
+
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
 
@@ -60,6 +66,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         setContentView(binding.root)
 
         voice = VoiceController(this, this)
+        web = WebActions(binding.webView)
         setupHomeScreen()
         setupBrowser()
         setupVoiceBar()
@@ -83,6 +90,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         voice.destroy()
         tts?.shutdown()
         binding.webView.destroy()
@@ -268,14 +276,37 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         binding.commandInput.clearFocus()
         getSystemService(InputMethodManager::class.java)
             ?.hideSoftInputFromWindow(binding.commandInput.windowToken, 0)
-        handleInput(text)
+        handleInput(text, typed = true)
     }
 
-    /** Runs a command, whether it was spoken or typed. */
-    private fun handleInput(text: String) {
+    /**
+     * Runs what the user said or typed. One input can hold several commands
+     * ("open TikTok then next video"); they run one after another.
+     */
+    private fun handleInput(text: String, typed: Boolean) {
         binding.voiceStatus.text = "“$text”"
-        perform(CommandParser.parse(text))
+        handler.removeCallbacksAndMessages(null) // a new instruction replaces an unfinished sequence
+        var commands = CommandParser.parseAll(text)
+        val only = commands.singleOrNull()
+        if (only is Command.Unknown && typed) {
+            // Typing is deliberate, so never leave it undone: search for it in the current app.
+            commands = listOf(Command.Search(text.trim(), null))
+        }
+        runSequence(commands, 0)
     }
+
+    private fun runSequence(commands: List<Command>, index: Int) {
+        val command = commands.getOrNull(index) ?: return
+        perform(command)
+        if (index + 1 < commands.size) {
+            // Give a new page time to load before acting on it.
+            val delay = if (command.loadsPage()) 3000L else 800L
+            handler.postDelayed({ runSequence(commands, index + 1) }, delay)
+        }
+    }
+
+    private fun Command.loadsPage() = this is Command.Open || this is Command.Search || this is Command.Home ||
+        this is Command.Back || this is Command.Tap || this is Command.TapNth || this is Command.Reload
 
     private fun ensureMicPermissionThenListen() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -301,11 +332,13 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         binding.voiceStatus.text = "“$text”"
     }
 
-    override fun onPhrase(text: String) = handleInput(text)
+    override fun onPhrase(text: String) = handleInput(text, typed = false)
 
     override fun onVoiceUnavailable() {
         binding.voiceStatus.text = getString(R.string.voice_unavailable)
     }
+
+    private val inApp: Boolean get() = binding.browserScreen.isVisible
 
     private fun perform(command: Command) {
         when (command) {
@@ -322,17 +355,64 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 confirm(getString(R.string.say_back))
                 goBack()
             }
+            Command.Forward -> inPage {
+                if (binding.webView.canGoForward()) binding.webView.goForward() else toast("Nothing to go forward to")
+            }
             Command.Home -> {
                 confirm(getString(R.string.say_home))
                 exitFullscreen()
                 showHome()
             }
-            Command.ScrollDown -> if (binding.browserScreen.isVisible) binding.webView.pageDown(false)
-            Command.ScrollUp -> if (binding.browserScreen.isVisible) binding.webView.pageUp(false)
-            Command.Reload -> if (binding.browserScreen.isVisible) {
+            Command.Reload -> inPage {
                 confirm(getString(R.string.say_reload))
                 binding.webView.reload()
             }
+
+            Command.ScrollDown -> inPage { toast("Scrolling down"); web.scroll(0.8) }
+            Command.ScrollUp -> inPage { toast("Scrolling up"); web.scroll(-0.8) }
+            Command.ScrollTop -> inPage { toast("Back to the top"); web.scrollToTop() }
+            Command.ScrollBottom -> inPage { toast("To the bottom"); web.scrollToBottom() }
+            Command.NextItem -> inPage { toast("Next"); web.nextItem(forward = true) }
+            Command.PreviousItem -> inPage { toast("Previous"); web.nextItem(forward = false) }
+            Command.ZoomIn -> inPage { binding.webView.zoomIn() }
+            Command.ZoomOut -> inPage { binding.webView.zoomOut() }
+
+            Command.Play -> inPage { web.play { ok -> toast(if (ok) "Playing" else "No video on this page") } }
+            Command.Pause -> inPage { web.pause { ok -> toast(if (ok) "Paused" else "No video on this page") } }
+            Command.Mute -> inPage { web.mute { ok -> toast(if (ok) "Muted" else "No video on this page") } }
+            Command.Unmute -> inPage { web.unmute { ok -> toast(if (ok) "Sound on" else "No video on this page") } }
+
+            is Command.Tap -> {
+                if (!inApp) {
+                    if (command.fallbackSearch) perform(Command.Search(command.spoken, null))
+                    else toast("Open an app first, then say \"${command.spoken}\"")
+                    return
+                }
+                web.tap(command.labels) { ok ->
+                    when {
+                        ok -> confirm("Tapped ${command.spoken}")
+                        command.fallbackSearch -> perform(Command.Search(command.spoken, null))
+                        else -> toast("Couldn't find \"${command.spoken}\" on this page")
+                    }
+                }
+            }
+            is Command.TapNth -> inPage {
+                web.tapNth(command.n) { ok ->
+                    if (ok) confirm("Opening number ${command.n}") else toast("Couldn't find item ${command.n} on this page")
+                }
+            }
+            is Command.TypeText -> {
+                if (!inApp) {
+                    perform(Command.Search(command.text, null))
+                    return
+                }
+                web.type(command.text, command.submit) { ok ->
+                    if (ok) toast("Typed \"${command.text}\"") else perform(Command.Search(command.text, null))
+                }
+            }
+            Command.PressEnter -> inPage { web.pressEnter() }
+
+            Command.Help -> showHelp()
             Command.StopListening -> {
                 confirm(getString(R.string.say_stop))
                 userMuted = true
@@ -341,6 +421,31 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             }
             is Command.Unknown -> toast(getString(R.string.say_unknown, command.heard))
         }
+    }
+
+    /** Runs [action] only when an app is open; on the home screen, explains what to do. */
+    private inline fun inPage(action: () -> Unit) {
+        if (inApp) action() else toast("Open an app first, for example say \"open TikTok\"")
+    }
+
+    private fun showHelp() {
+        AlertDialog.Builder(this)
+            .setTitle("Things you can say or type")
+            .setMessage(
+                """
+                Apps: open YouTube · open TikTok · go home · go back
+                Search: search cats on TikTok · play music on YouTube
+                Feeds: next video · previous video · scroll down · scroll up · go to top
+                Video: play · pause · mute · unmute
+                Buttons: like · comment · share · follow · subscribe · save · skip ad
+                Tap anything: tap Shorts · click Following · open the first video
+                Typing: type happy birthday and send · press enter
+                Chain: open TikTok then next video
+                Voice: stop listening (tap the mic to turn it back on)
+                """.trimIndent(),
+            )
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     /** Shows what Arrow Os understood, and says it out loud. */

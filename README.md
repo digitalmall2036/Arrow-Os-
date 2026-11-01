@@ -51,18 +51,30 @@ you type.
 
 Arrow Os shows (and says out loud) what it understood.
 
-| Say | What happens |
+Commands work both outside and **inside** the apps:
+
+| Say or type | What happens |
 | --- | --- |
 | "open YouTube" / "launch TikTok" / just "Instagram" | Opens that app |
-| "search cats on TikTok" | Searches TikTok for "cats" |
-| "play music on YouTube" | Searches YouTube for "music" |
-| "search Facebook for news" | Searches Facebook for "news" |
+| "search cats on TikTok" / "play music on YouTube" | Searches that app |
 | "search cats" | Searches the app you're in (YouTube from the home screen) |
-| "go back" | Goes back one page (or home, from an app's first page) |
-| "go home" | Returns to the Arrow Os home screen |
-| "scroll down" / "scroll up" | Scrolls the page |
-| "refresh" | Reloads the page |
+| "next video" / "scroll to the next video" / "swipe up" / "skip" | Next video or post in the feed |
+| "previous video" / "swipe down" | Previous video or post |
+| "scroll down" / "scroll up" / "go to the top" | Scrolls the page |
+| "play" / "pause" / "mute" / "unmute" | Controls the video on screen |
+| "like" / "comment" / "share" / "follow" / "subscribe" / "save" / "skip ad" | Taps that button on the page |
+| "tap Shorts" / "click Following" / "press next" | Taps any button or link by its name |
+| "open the first video" / "play the second one" | Opens that item on the page |
+| "type happy birthday and send" | Types into the text box on the page (and sends it) |
+| "open TikTok then next video" | Runs several commands in a row |
+| "go back" / "go forward" / "go home" / "refresh" | Navigation |
+| "help" | Shows the list of commands |
 | "stop listening" | Turns voice off (tap the mic to turn it back on) |
+
+If you **type** something Arrow Os doesn't recognize, it searches for it in the app
+you're in, so typed text always does something. Unrecognized **speech** is ignored
+(with a "didn't understand" note), because the always-on mic also hears
+background talk.
 
 Words like "hey Arrow", "please", and "can you" are ignored, so
 "Hey Arrow, please open YouTube" works too. "Nine apps", "9 apps" and "9apps" all

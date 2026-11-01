@@ -22,5 +22,5 @@
     <string name="say_home">Going home</string>
     <string name="say_reload">Reloading</string>
     <string name="say_stop">Voice off</string>
-    <string name="say_unknown">Didn\'t understand: \"%1$s\"</string>
+    <string name="say_unknown">Didn\'t understand \"%1$s\". Say \"help\" to see what works.</string>
 </resources>
