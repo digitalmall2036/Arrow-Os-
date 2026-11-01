@@ -110,6 +110,36 @@ class CommandParserTest {
         assertEquals(Command.StopListening, parse("tap stop listening"))
     }
 
+    @Test fun websites() {
+        assertEquals(Command.OpenWebsite("claude code"), parse("search Claude code website"))
+        assertEquals(Command.OpenWebsite("bbc"), parse("search the BBC website"))
+        assertEquals(Command.OpenWebsite("claude.ai"), parse("search claude.ai"))
+        assertEquals(Command.OpenWebsite("claude.ai"), parse("search claude dot ai"))
+        assertEquals(Command.OpenWebsite("bbc.co.uk/news"), parse("tap open bbc.co.uk/news"))
+        assertEquals(Command.OpenWebsite("jumia.ug"), parse("tap go to jumia.ug"))
+        assertEquals(Command.OpenWebsite("new vision"), parse("tap open New Vision website"))
+        assertEquals(Command.Open(ArrowApp.YOUTUBE), parse("search YouTube website"))
+        assertTrue((parse("search claude.ai") as Command.OpenWebsite).isAddress)
+        assertTrue(!(parse("search Claude code website") as Command.OpenWebsite).isAddress)
+        // Ordinary searches are unchanged.
+        assertEquals(Command.Search("how to cook rice", null), parse("search how to cook rice"))
+    }
+
+    @Test fun tapOpenSomethingOnThePage() {
+        val tap = parse("tap open settings") as Command.Tap
+        assertEquals("open settings", tap.labels.first())
+        assertTrue("settings" in tap.labels)
+        assertEquals(Command.Tap("sign up", listOf("sign up", "create account", "register")), parse("tap sign up"))
+    }
+
+    @Test fun webLinks() {
+        assertEquals("https://claude.ai", WebLinks.websiteUrl("claude.ai"))
+        assertEquals("https://duckduckgo.com/?q=%21ducky+claude+code", WebLinks.websiteUrl("claude code"))
+        assertEquals("https://www.google.com/search?q=jeff+bezos", WebLinks.searchUrl("jeff bezos"))
+        assertTrue("web.facebook.com" in WebLinks.alternativesFor("m.facebook.com"))
+        assertTrue("mbasic.facebook.com" in WebLinks.alternativesFor("m.facebook.com"))
+    }
+
     @Test fun searchUrlsEncodeQuery() {
         assertEquals("https://m.youtube.com/results?search_query=funny+cats", ArrowApp.YOUTUBE.searchUrl("funny cats"))
         assertEquals("https://www.tiktok.com/search?q=a%26b", ArrowApp.TIKTOK.searchUrl("a&b"))

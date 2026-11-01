@@ -44,8 +44,11 @@ Arrow Os understands two command words. Every command starts with one of them;
 anything else (like just saying "Jeff Bezos") is ignored and does nothing.
 
 - **search** finds things: `search Tom and Jerry`, `search Jeff Bezos`,
-  `search cats on TikTok`. Inside an app it searches that app; from the home screen
-  it searches YouTube.
+  `search cats on TikTok`. Inside one of the five apps it searches that app; from the
+  home screen or a website it searches the web (Google).
+- **Websites:** `search Claude code website` opens that site directly (the top
+  result), `search claude.ai` or `tap open bbc.co.uk` opens the address. Saying
+  "dot" works too: `search claude dot ai`.
 - **tap** does anything on screen:
 
 | Command | What happens |
@@ -84,6 +87,12 @@ turns it on or off. "Hey Arrow" and "please" are ignored, and "tab" is understoo
 - Voice uses Android's built-in speech recognition (from the Google app). If the
   bar says voice isn't available, install or update the Google app.
 - Listening stops when you leave Arrow Os and restarts when you come back.
+- If a site can't be reached, Arrow Os tries its other addresses (Facebook has
+  several: m., web., mbasic., touch., www.) and then explains what went wrong, with a
+  Try again button. If every Facebook address is refused, the network itself is
+  blocking Facebook; check whether facebook.com opens in Chrome.
+- Sites can ask for photos or files (for posting), and downloads (for example from
+  9apps) go to Android's download manager; tap the notification to open them.
 - Instagram search needs a login, so "search X on Instagram" opens the `#X` hashtag page.
 
 ## For developers

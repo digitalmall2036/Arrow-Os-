@@ -2,12 +2,15 @@ package com.arrowos.app
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.DownloadManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
@@ -17,8 +20,12 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.text.Html
 import android.webkit.CookieManager
+import android.webkit.URLUtil
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -42,8 +49,24 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private var tts: TextToSpeech? = null
     private var ttsReady = false
 
-    /** The app currently open in the browser, or null on the home screen. */
+    /** The app currently open in the browser, or null on the home screen or a website. */
     private var currentApp: ArrowApp? = null
+
+    /** Clear back-history once the next page commits, so Back never leads into the previous app. */
+    private var resetHistoryOnNextPage = false
+
+    /** Backup addresses still to try for the page that failed to load (see [WebLinks.alternativesFor]). */
+    private var pendingAlternatives: MutableList<String> = mutableListOf()
+    private var triedAlternatives = false
+
+    /** Ask for the microphone at most once per launch; afterwards only when the mic button is tapped. */
+    private var askedForMic = false
+
+    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+    private val fileChooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        fileChooserCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
+        fileChooserCallback = null
+    }
 
     /** The user turned the mic off with the button; don't auto-restart it on resume. */
     private var userMuted = false
@@ -79,7 +102,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     override fun onResume() {
         super.onResume()
         binding.webView.onResume()
-        if (!userMuted) ensureMicPermissionThenListen()
+        if (!userMuted) ensureMicPermissionThenListen(userAsked = false)
     }
 
     override fun onPause() {
@@ -116,9 +139,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         currentApp = null
         binding.homeScreen.isVisible = true
         binding.browserScreen.isVisible = false
+        pendingAlternatives.clear()
         binding.webView.stopLoading()
+        resetHistoryOnNextPage = true
         binding.webView.loadUrl("about:blank")
-        binding.webView.clearHistory()
     }
 
     // ---------- In-app browser ----------
@@ -139,6 +163,16 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             displayZoomControls = false
             cacheMode = WebSettings.LOAD_DEFAULT
             setSupportMultipleWindows(false)
+            // Look like Chrome rather than an embedded WebView. With the WebView marker
+            // ("; wv"), Instagram and Facebook hide features and push "Open the app".
+            userAgentString = userAgentString
+                .replace("; wv", "")
+                .replace(Regex("Version/\\d+(\\.\\d+)* "), "")
+        }
+
+        // Files (for example APKs from 9apps) download with Android's download manager.
+        binding.webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            startDownload(url, userAgent, contentDisposition, mimeType)
         }
 
         binding.webView.webViewClient = object : WebViewClient() {
@@ -151,6 +185,23 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
             override fun onPageFinished(view: WebView, url: String?) {
                 binding.pageProgress.isVisible = false
+                // On a website (not one of the five apps) show the page's name.
+                if (currentApp == null && binding.browserScreen.isVisible) {
+                    binding.browserTitle.text = view.title?.takeIf { it.isNotBlank() && !it.startsWith("http") }
+                        ?: Uri.parse(url ?: "").host ?: getString(R.string.app_name)
+                }
+            }
+
+            override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+                if (resetHistoryOnNextPage) {
+                    resetHistoryOnNextPage = false
+                    view.clearHistory()
+                }
+            }
+
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                if (!request.isForMainFrame) return
+                handleLoadFailure(view, request.url, error.errorCode, error.description?.toString() ?: "")
             }
         }
 
@@ -173,6 +224,24 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             }
 
             override fun onHideCustomView() = exitFullscreen()
+
+            // Lets sites ask for a photo or file (posting on Instagram/Facebook).
+            override fun onShowFileChooser(
+                webView: WebView,
+                callback: ValueCallback<Array<Uri>>,
+                params: FileChooserParams,
+            ): Boolean {
+                fileChooserCallback?.onReceiveValue(null)
+                fileChooserCallback = callback
+                return try {
+                    fileChooser.launch(params.createIntent())
+                    true
+                } catch (e: Exception) {
+                    fileChooserCallback = null
+                    toast("No app on this phone can pick that file")
+                    false
+                }
+            }
         }
 
         binding.browserBack.setOnClickListener { goBack() }
@@ -208,13 +277,91 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     }
 
     private fun openApp(app: ArrowApp, url: String = app.homeUrl) {
-        val switching = currentApp != app
+        val switching = currentApp != app || !binding.browserScreen.isVisible
         currentApp = app
+        binding.browserTitle.text = app.label
+        load(url, freshHistory = switching)
+    }
+
+    /** Opens any website inside Arrow Os. */
+    private fun openWebsite(url: String, title: String) {
+        val switching = currentApp != null || !binding.browserScreen.isVisible
+        currentApp = null
+        binding.browserTitle.text = title
+        load(url, freshHistory = switching)
+    }
+
+    private fun load(url: String, freshHistory: Boolean) {
         binding.homeScreen.isVisible = false
         binding.browserScreen.isVisible = true
-        binding.browserTitle.text = app.label
+        pendingAlternatives.clear()
+        triedAlternatives = false
+        if (freshHistory) resetHistoryOnNextPage = true
         binding.webView.loadUrl(url)
-        if (switching) binding.webView.clearHistory()
+    }
+
+    /**
+     * A page couldn't load. If the site has backup addresses (Facebook has several),
+     * try the next one; otherwise show a clear explanation with a Retry button.
+     */
+    private fun handleLoadFailure(view: WebView, failed: Uri, errorCode: Int, description: String) {
+        val host = failed.host ?: ""
+        if (!triedAlternatives) {
+            triedAlternatives = true
+            pendingAlternatives = WebLinks.alternativesFor(host).filter { it != host }.toMutableList()
+        }
+        val next = pendingAlternatives.removeFirstOrNull()
+        if (next != null) {
+            binding.voiceStatus.text = getString(R.string.trying_other_address, next)
+            view.loadUrl(failed.buildUpon().authority(next).build().toString())
+            return
+        }
+        showErrorPage(view, failed.toString(), host, errorCode, description)
+    }
+
+    private fun showErrorPage(view: WebView, url: String, host: String, errorCode: Int, description: String) {
+        val blocked = errorCode == WebViewClient.ERROR_CONNECT || errorCode == WebViewClient.ERROR_HOST_LOOKUP ||
+            description.contains("REFUSED") || description.contains("RESET") || description.contains("NAME_NOT_RESOLVED")
+        val isFacebook = host.contains("facebook")
+        val reason = when {
+            isFacebook && blocked -> getString(R.string.error_facebook_blocked)
+            blocked -> getString(R.string.error_blocked, host)
+            else -> getString(R.string.error_generic, description)
+        }
+        val safeUrl = Html.escapeHtml(url)
+        val html = """
+            <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>body{background:#0B0F1A;color:#fff;font-family:sans-serif;padding:28px;line-height:1.5}
+            h2{color:#00D1FF}button{background:#00D1FF;color:#0B0F1A;border:0;border-radius:24px;padding:12px 28px;font-size:16px;font-weight:bold}
+            small{color:#9AA4BF;word-break:break-all}</style></head>
+            <body><h2>${Html.escapeHtml(getString(R.string.error_title, host))}</h2>
+            <p>${Html.escapeHtml(reason)}</p>
+            <p><button onclick="location.href=decodeURIComponent('${Uri.encode(url)}')">${Html.escapeHtml(getString(R.string.retry))}</button></p>
+            <small>$safeUrl<br>${Html.escapeHtml(description)}</small></body></html>
+        """.trimIndent()
+        view.loadDataWithBaseURL(null, html, "text/html", "utf-8", url)
+    }
+
+    private fun startDownload(url: String, userAgent: String?, contentDisposition: String?, mimeType: String?) {
+        if (!url.startsWith("http")) {
+            toast("This file can't be downloaded here")
+            return
+        }
+        try {
+            val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
+            val request = DownloadManager.Request(Uri.parse(url)).apply {
+                setMimeType(mimeType)
+                CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
+                userAgent?.let { addRequestHeader("User-Agent", it) }
+                setTitle(fileName)
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setDestinationInExternalFilesDir(this@MainActivity, Environment.DIRECTORY_DOWNLOADS, fileName)
+            }
+            getSystemService(DownloadManager::class.java).enqueue(request)
+            toast("Downloading $fileName. Tap the notification when it's done.")
+        } catch (e: Exception) {
+            toast("Download failed: ${e.message}")
+        }
     }
 
     private fun goBack() {
@@ -250,7 +397,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 binding.voiceStatus.text = getString(R.string.voice_off)
             } else {
                 userMuted = false
-                ensureMicPermissionThenListen()
+                ensureMicPermissionThenListen(userAsked = true)
             }
         }
         binding.voiceStatus.text = getString(R.string.voice_hint)
@@ -308,13 +455,16 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
     }
 
-    private fun Command.loadsPage() = this is Command.Open || this is Command.Search || this is Command.Home ||
+    private fun Command.loadsPage() = this is Command.Open || this is Command.Search || this is Command.OpenWebsite || this is Command.Home ||
         this is Command.Back || this is Command.Tap || this is Command.TapNth || this is Command.Reload
 
-    private fun ensureMicPermissionThenListen() {
+    private fun ensureMicPermissionThenListen(userAsked: Boolean) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startListening()
-        } else {
+        } else if (userAsked || !askedForMic) {
+            // Closing the permission dialog resumes the activity; without this guard a
+            // "Deny" would bring the dialog straight back.
+            askedForMic = true
             micPermission.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
@@ -350,9 +500,19 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 openApp(command.app)
             }
             is Command.Search -> {
-                val app = command.app ?: currentApp ?: ArrowApp.YOUTUBE
-                confirm(getString(R.string.say_searching, command.query, app.label))
-                openApp(app, app.searchUrl(command.query))
+                // Inside one of the five apps, search that app; anywhere else, search the web.
+                val app = command.app ?: currentApp
+                if (app != null) {
+                    confirm(getString(R.string.say_searching, command.query, app.label))
+                    openApp(app, app.searchUrl(command.query))
+                } else {
+                    confirm(getString(R.string.say_searching_web, command.query))
+                    openWebsite(WebLinks.searchUrl(command.query), command.query)
+                }
+            }
+            is Command.OpenWebsite -> {
+                confirm(getString(R.string.say_opening, command.target))
+                openWebsite(WebLinks.websiteUrl(command.target), command.target)
             }
             Command.Back -> {
                 confirm(getString(R.string.say_back))
@@ -397,7 +557,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
             is Command.Tap -> {
                 if (!inApp) {
-                    toast("Open an app first, for example \"tap open TikTok\"")
+                    toast("Open an app or website first, for example \"tap open TikTok\"")
                     return
                 }
                 binding.voiceStatus.text = getString(R.string.scanning, command.spoken)
@@ -418,11 +578,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             }
             is Command.TypeText -> {
                 if (!inApp) {
-                    perform(Command.Search(command.text, null))
+                    toast("Open an app or website first, then type into it")
                     return
                 }
                 web.type(command.text, command.submit) { ok ->
-                    if (ok) toast("Typed \"${command.text}\"") else perform(Command.Search(command.text, null))
+                    toast(if (ok) "Typed \"${command.text}\"" else "No text box on this page. Tap one first, then type.")
                 }
             }
             Command.PressEnter -> inPage { web.pressEnter() }
@@ -443,7 +603,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     /** Runs [action] only when an app is open; on the home screen, explains what to do. */
     private inline fun inPage(action: () -> Unit) {
-        if (inApp) action() else toast("Open an app first, for example \"tap open TikTok\"")
+        if (inApp) action() else toast("Open an app or website first, for example \"tap open TikTok\"")
     }
 
     private fun showHelp() {
@@ -453,6 +613,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 """
                 SEARCH finds things:
                 search Tom and Jerry · search Jeff Bezos · search cats on TikTok
+                Inside an app it searches that app; elsewhere it searches the web.
+
+                Websites:
+                search Claude code website · search claude.ai · tap open bbc.com
 
                 TAP does anything on screen:
                 tap open YouTube · tap home · tap back
@@ -503,5 +667,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         })
     }
 
-    private fun resumeMic() = runOnUiThread { voice.paused = false }
+    private fun resumeMic() = runOnUiThread {
+        // Stay paused while the user is typing a command.
+        if (!binding.commandInput.hasFocus()) voice.paused = false
+    }
 }

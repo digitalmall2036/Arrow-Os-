@@ -27,4 +27,12 @@
     <string name="scanning">Scanning the page for \"%1$s\"…</string>
     <string name="tapped">Tapped: %1$s</string>
     <string name="not_found">Nothing on this page matches \"%1$s\"</string>
+
+    <string name="say_searching_web">Searching the web for %1$s</string>
+    <string name="trying_other_address">Couldn\'t connect. Trying %1$s…</string>
+    <string name="error_title">Can\'t reach %1$s</string>
+    <string name="error_facebook_blocked">Your internet connection refused every Facebook address Arrow Os tried. This usually means the network or internet provider blocks Facebook (some countries do this, and then a VPN is needed). Check whether facebook.com opens in Chrome on this phone. If it doesn\'t, the block is on the network, not in Arrow Os.</string>
+    <string name="error_blocked">Your internet connection refused %1$s. The site may be down, or blocked by your network.</string>
+    <string name="error_generic">The page didn\'t load: %1$s</string>
+    <string name="retry">Try again</string>
 </resources>

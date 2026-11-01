@@ -6,6 +6,13 @@ sealed class Command {
     data class Open(val app: ArrowApp) : Command()
     /** [app] is null when the user didn't name one; the current app (or YouTube) is used. */
     data class Search(val query: String, val app: ArrowApp?) : Command()
+    /**
+     * Go straight to a website. [target] is either an address ("claude.ai") or a
+     * name ("claude code"), in which case the best-matching site is opened.
+     */
+    data class OpenWebsite(val target: String) : Command() {
+        val isAddress: Boolean get() = CommandParser.looksLikeAddress(target)
+    }
     data object Back : Command()
     data object Forward : Command()
     data object Home : Command()
@@ -95,6 +102,7 @@ object CommandParser {
 
     private const val TAP = "tap"
     private const val SEARCH = "search"
+    private const val TLDS = "com|org|net|ai|io|co|uk|ug|ke|tz|ng|za|tv|me|app|dev|info|edu|gov|biz|us|ca|in"
 
     private val itemWords = "video|videos|post|posts|reel|reels|clip|short|shorts|one|item|story|result|results|link|song|movie|episode"
 
@@ -160,6 +168,9 @@ object CommandParser {
         var query = body.trim().removePrefix("for ").trim()
         if (query.isEmpty()) return null
 
+        // "search Claude code website", "search claude.ai": go to the site itself.
+        websiteTarget(query)?.let { return it }
+
         // "search on tiktok for cats" / "search tiktok for cats"
         Regex("^(?:on |in )?(.+?) for (.+)$").find(query)?.let { m ->
             val app = exactApp(m.groupValues[1])
@@ -212,7 +223,10 @@ object CommandParser {
     private fun tapByName(body: String): Command {
         val target = body.removePrefix("the ").trim()
             .removeSuffix(" button").removeSuffix(" icon").removeSuffix(" link").removeSuffix(" tab").trim()
-        return Command.Tap(target, TapVocabulary.labelsFor(target))
+        // "tap open settings": the button may say "Open settings" or just "Settings".
+        val bare = Regex("^(?:open|go to|show|see) (.+)$").find(target)?.groupValues?.get(1)
+        val labels = TapVocabulary.labelsFor(target) + (bare?.let { TapVocabulary.labelsFor(it) } ?: emptyList())
+        return Command.Tap(target, labels.distinct())
     }
 
     /** A specific action Arrow Os knows how to do, or null if [text] is just a name to tap. */
@@ -310,9 +324,35 @@ object CommandParser {
     /** "open YouTube", "go to TikTok", or just "YouTube". */
     private fun parseOpenApp(text: String): Command? {
         exactApp(text)?.let { return Command.Open(it) }
-        val m = Regex("^(?:open|launch|start|go to|switch to|show) (.+)$").find(text) ?: return null
-        return exactApp(m.groupValues[1].removeSuffix(" app").trim())?.let { Command.Open(it) }
+        if (looksLikeAddress(text)) return Command.OpenWebsite(text)
+        val m = Regex("^(?:open|launch|start|go to|switch to|show|visit|take me to) (.+)$").find(text) ?: return null
+        val rest = m.groupValues[1].removeSuffix(" app").trim()
+        exactApp(rest)?.let { return Command.Open(it) }
+        // "tap open claude.ai", "tap go to the BBC website"
+        return websiteTarget(rest)
     }
+
+    private val websiteSuffixes = listOf(
+        " official website", " official site", " website", " web site", " webpage", " web page", " homepage", " home page", " site",
+    )
+
+    /**
+     * A website the user wants to visit: an address ("claude.ai", "bbc.co.uk/news") or a
+     * name followed by "website"/"site" ("Claude code website"). Null otherwise.
+     */
+    private fun websiteTarget(text: String): Command? {
+        var t = text.trim().removePrefix("the ").removePrefix("website ").removePrefix("site ").trim()
+        if (looksLikeAddress(t)) return Command.OpenWebsite(t)
+        val suffix = websiteSuffixes.firstOrNull { t.endsWith(it) } ?: return null
+        t = t.removeSuffix(suffix).trim().removeSuffix("'s").removePrefix("the ").trim()
+        if (t.isEmpty()) return null
+        exactApp(t)?.let { return Command.Open(it) } // "search YouTube website" just opens YouTube
+        return Command.OpenWebsite(t)
+    }
+
+    /** "claude.ai", "www.bbc.co.uk/news", "https://example.com". */
+    fun looksLikeAddress(text: String): Boolean =
+        Regex("^(https?://)?([a-z0-9-]+\\.)+[a-z]{2,}(/\\S*)?$").matches(text.trim())
 
     private fun exactApp(text: String): ArrowApp? {
         val t = text.trim().removePrefix("the ").trim()
@@ -325,9 +365,17 @@ object CommandParser {
      */
     fun normalize(raw: String): String {
         var t = raw.lowercase()
-            .replace(Regex("[^a-z0-9\\s]"), " ")
+            // Keep the dots and slashes of web addresses ("claude.ai", "bbc.co.uk/news").
+            .replace(Regex("[^a-z0-9\\s./:-]"), " ")
+            .replace(Regex("(?<![a-z0-9])[./:-]|[./:-](?![a-z0-9])"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+        // Spoken addresses: "claude dot ai" -> "claude.ai".
+        t = t.replace(Regex("([a-z0-9-]+) dot ($TLDS)\\b"), "$1.$2")
+        // Hyphens and colons only matter inside addresses.
+        t = t.split(' ').joinToString(" ") { w ->
+            if (w.contains('.') && looksLikeAddress(w)) w else w.replace(Regex("[./:-]"), " ")
+        }.replace(Regex("\\s+"), " ").trim()
         val fillers = listOf(
             "hey arrow", "ok arrow", "okay arrow", "arrow", "please", "can you", "could you", "would you",
             "will you", "i want to", "i wanna", "i would like to", "now", "just", "kindly", "hey", "ok", "okay",

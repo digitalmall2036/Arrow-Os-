@@ -83,13 +83,23 @@ class WebActions(private val webView: WebView) {
     return root();
   }
   function height(s){ return (s===root())?innerHeight:s.clientHeight; }
+  function onScreen(e){
+    var r=e.getBoundingClientRect(); return r.top>=0&&r.left>=0&&r.bottom<=innerHeight&&r.right<=innerWidth;
+  }
   function fire(e){
-    try{ e.scrollIntoView({block:'center'}); }catch(x){}
+    if(!onScreen(e)){ try{ e.scrollIntoView({block:'center'}); }catch(x){} }
     var r=e.getBoundingClientRect(), x=r.left+r.width/2, y=r.top+r.height/2;
+    var opts={bubbles:true,cancelable:true,composed:true,clientX:x,clientY:y,view:window,button:0};
+    var P=window.PointerEvent;
     ['pointerdown','mousedown','pointerup','mouseup'].forEach(function(t){
-      try{ e.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window})); }catch(x){}
+      try{
+        var ev=(t.indexOf('pointer')===0&&P)?new P(t,Object.assign({pointerId:1,pointerType:'touch',isPrimary:true},opts)):new MouseEvent(t,opts);
+        e.dispatchEvent(ev);
+      }catch(x){}
     });
-    e.click();
+    if(typeof e.click==='function') e.click();
+    else e.dispatchEvent(new MouseEvent('click',opts));
+    if(e.focus&&/INPUT|TEXTAREA|SELECT/.test(e.tagName)) e.focus();
     return true;
   }
   function displayed(e){
@@ -198,10 +208,9 @@ class WebActions(private val webView: WebView) {
   }
   function see(want){
     want=want.map(words).filter(function(w){ return w; });
-    var best=null;
+    var best=null, screen=innerWidth*innerHeight;
     allElements(document,[]).forEach(function(e){
-      if(!visible(e)) return;
-      var target=clickTarget(e); if(!target) return;
+      if(!displayed(e)) return;
       var ns=names(e); if(!ns.length) return;
       var score=0, name='';
       ns.forEach(function(n){
@@ -213,11 +222,17 @@ class WebActions(private val webView: WebView) {
         });
       });
       if(score<=25) return;
+      // Tap the button that owns this text or icon. Sites built with React often
+      // attach clicks invisibly, so a labelled element with no clickable parent is
+      // still tapped itself, just ranked a little lower.
+      var target=clickTarget(e);
       if(target===e) score+=6;
+      else if(!target){ target=e; score-=8; }
       var r=target.getBoundingClientRect();
-      if(r.width*r.height>innerWidth*innerHeight*0.5) return; // whole-page wrappers aren't buttons
-      if(r.top>=0&&r.bottom<=innerHeight) score+=4;             // fully on screen
-      if(!best||score>best.score) best={el:target,score:score,name:name};
+      if(r.width*r.height>screen*0.5) return;       // whole-page wrappers aren't buttons
+      if(onScreen(target)) score+=10;                // prefer what the user can see
+      else if(!visible(target)) score-=6;            // off screen: scrolled to before tapping
+      if(!best||score>=best.score) best={el:target,score:score,name:name}; // ties: the innermost match wins
     });
     return best;
   }
@@ -275,6 +290,7 @@ class WebActions(private val webView: WebView) {
     // pick the best match for the words, show it, and tap it. Returns what was tapped.
     tap:function(words){
       var hit=see(words); if(!hit) return '';
+      if(!onScreen(hit.el)){ try{ hit.el.scrollIntoView({block:'center'}); }catch(x){} }
       show(hit.el); fire(hit.el);
       return hit.name||words[0];
     },
