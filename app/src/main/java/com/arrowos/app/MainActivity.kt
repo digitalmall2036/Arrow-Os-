@@ -13,6 +13,8 @@ import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -244,6 +246,35 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             }
         }
         binding.voiceStatus.text = getString(R.string.voice_hint)
+
+        // Typing is the second way to give commands; it goes through the same parser as speech.
+        binding.commandInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_DONE) {
+                submitTypedCommand()
+                true
+            } else {
+                false
+            }
+        }
+        binding.sendButton.setOnClickListener { submitTypedCommand() }
+        // Don't let the mic pick up stray words while the user is typing.
+        binding.commandInput.setOnFocusChangeListener { _, hasFocus -> voice.paused = hasFocus }
+    }
+
+    private fun submitTypedCommand() {
+        val text = binding.commandInput.text.toString().trim()
+        if (text.isEmpty()) return
+        binding.commandInput.text.clear()
+        binding.commandInput.clearFocus()
+        getSystemService(InputMethodManager::class.java)
+            ?.hideSoftInputFromWindow(binding.commandInput.windowToken, 0)
+        handleInput(text)
+    }
+
+    /** Runs a command, whether it was spoken or typed. */
+    private fun handleInput(text: String) {
+        binding.voiceStatus.text = "“$text”"
+        perform(CommandParser.parse(text))
     }
 
     private fun ensureMicPermissionThenListen() {
@@ -270,10 +301,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         binding.voiceStatus.text = "“$text”"
     }
 
-    override fun onPhrase(text: String) {
-        binding.voiceStatus.text = "“$text”"
-        perform(CommandParser.parse(text))
-    }
+    override fun onPhrase(text: String) = handleInput(text)
 
     override fun onVoiceUnavailable() {
         binding.voiceStatus.text = getString(R.string.voice_unavailable)

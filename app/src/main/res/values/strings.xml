@@ -1,14 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Arrow Os</string>
-    <string name="home_tagline">Say \"open YouTube\" or \"search cats on TikTok\"</string>
+    <string name="home_tagline">Say or type \"open YouTube\" or \"search cats on TikTok\"</string>
     <string name="open_app">Open %1$s</string>
     <string name="back">Back</string>
     <string name="home">Home</string>
     <string name="reload">Reload</string>
     <string name="mic">Microphone on or off</string>
+    <string name="send">Run command</string>
+    <string name="type_hint">Type a command…</string>
 
-    <string name="voice_hint">Tap the mic or just speak</string>
+    <string name="voice_hint">Speak, or type a command below</string>
     <string name="voice_listening">Listening…</string>
     <string name="voice_off">Voice is off. Tap the mic to turn it on.</string>
     <string name="voice_permission_denied">Arrow Os needs the microphone for voice control. Tap the mic to try again.</string>

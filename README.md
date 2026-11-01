@@ -38,11 +38,16 @@ The release is updated every time code lands on `main`.
 
 When updating, install the new APK over the old one. Your app logins are kept.
 
-## Using voice commands
+## Giving commands: speak or type
 
 When Arrow Os is open it is **always listening**. The bar at the bottom shows what it
 hears. The **mic button** turns listening on or off. The first time, allow the
 microphone permission.
+
+Prefer typing? Tap the **Type a command…** box at the bottom, type the same thing
+you would say (for example `search cats on TikTok`), and press **Go** on the keyboard or
+the send arrow. Typed commands work exactly like spoken ones. The mic pauses while
+you type.
 
 Arrow Os shows (and says out loud) what it understood.
 
