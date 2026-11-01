@@ -114,7 +114,7 @@ class VoiceController(
             listener.onListeningChanged(false)
             val candidates = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
             // Prefer the first candidate the parser understands; otherwise pass the top one.
-            val best = candidates.firstOrNull { CommandParser.parse(it) !is Command.Unknown }
+            val best = candidates.firstOrNull { CommandParser.parse(it) !is Command.Ignored }
                 ?: candidates.firstOrNull()
             if (!best.isNullOrBlank()) listener.onPhrase(best)
             if (continuous) scheduleRestart(300)

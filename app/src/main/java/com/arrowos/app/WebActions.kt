@@ -31,6 +31,9 @@ class WebActions(private val webView: WebView) {
     /** Opens the [n]th video/result/post (1-based) visible on the page. */
     fun tapNth(n: Int, done: (Boolean) -> Unit) = run("nth($n)", done)
 
+    /** Scrolls the [n]th video/result/post (1-based) into the middle of the screen. */
+    fun scrollToNth(n: Int, done: (Boolean) -> Unit) = run("scrollToNth($n)", done)
+
     /** Types [text] into the focused text box, or the first visible one. */
     fun type(text: String, submit: Boolean, done: (Boolean) -> Unit) =
         run("type(${JSONObject.quote(text)}, $submit)", done)
@@ -93,6 +96,30 @@ class WebActions(private val webView: WebView) {
     e.click();
     return true;
   }
+  function displayed(e){
+    var r=e.getBoundingClientRect(); if(r.width<2||r.height<2) return false;
+    var s=getComputedStyle(e); return s.visibility!=='hidden'&&s.display!=='none';
+  }
+  // Videos / posts / results on the page, top to bottom, including ones scrolled out of view.
+  function items(){
+    var seen={}, out=[];
+    [].slice.call(document.querySelectorAll('a[href]')).forEach(function(a){
+      if(!displayed(a)) return;
+      var r=a.getBoundingClientRect();
+      var media=a.querySelector('img,video,picture,[style*=background-image]');
+      if(!media&&r.width*r.height<8000) return;
+      if(r.height<40) return;
+      var href=a.href.split('#')[0]; if(seen[href]) return; seen[href]=1;
+      out.push({a:a,top:r.top+(window.scrollY||0),left:r.left});
+    });
+    if(!out.length){
+      [].slice.call(document.querySelectorAll('video')).filter(displayed).forEach(function(v){
+        var r=v.getBoundingClientRect(); out.push({a:v,top:r.top+(window.scrollY||0),left:r.left});
+      });
+    }
+    out.sort(function(x,y){ return Math.abs(x.top-y.top)<20?x.left-y.left:x.top-y.top; });
+    return out.map(function(o){ return o.a; });
+  }
   function bestVideo(){
     var vs=[].slice.call(document.querySelectorAll('video'));
     var shown=vs.filter(visible);
@@ -117,7 +144,14 @@ class WebActions(private val webView: WebView) {
       return true;
     },
     media:function(what){
-      var v=bestVideo(); if(!v) return false;
+      var v=bestVideo();
+      if(!v||!visible(v)){
+        // "play it" after "scroll to the second video": open that item.
+        var last=window.__arrow.last;
+        if(last&&last.tagName==='VIDEO') v=last;
+        else if(what==='play'&&last&&document.contains(last)) return fire(last);
+        if(!v) return false;
+      }
       if(what==='play'){ var p=v.play(); if(p&&p.catch) p.catch(function(){}); }
       else if(what==='pause') v.pause();
       else if(what==='mute') v.muted=true;
@@ -143,18 +177,15 @@ class WebActions(private val webView: WebView) {
       return best?fire(best):false;
     },
     nth:function(n){
-      var seen={}, items=[];
-      [].slice.call(document.querySelectorAll('a[href]')).forEach(function(a){
-        if(!visible(a)&&!a.querySelector('img,video')) return;
-        var r=a.getBoundingClientRect();
-        var media=a.querySelector('img,video,picture,[style*=background-image]');
-        if(!media&&r.width*r.height<8000) return;
-        if(r.height<40) return;
-        var href=a.href.split('#')[0]; if(seen[href]) return; seen[href]=1;
-        items.push({a:a,top:r.top+(window.scrollY||0),left:r.left});
-      });
-      items.sort(function(x,y){ return Math.abs(x.top-y.top)<20?x.left-y.left:x.top-y.top; });
-      var hit=items[n-1]; return hit?fire(hit.a):false;
+      var hit=items()[n-1]; if(!hit) return false;
+      window.__arrow.last=hit; return fire(hit);
+    },
+    scrollToNth:function(n){
+      var hit=items()[n-1];
+      if(!hit){ return window.__arrow.item(1); } // feeds like TikTok: just move on to the next one
+      window.__arrow.last=hit;
+      try{ hit.scrollIntoView({block:'center',behavior:'smooth'}); }catch(x){ hit.scrollIntoView(); }
+      return true;
     },
     type:function(text,submit){
       var i=document.activeElement;

@@ -19,21 +19,21 @@ sealed class Command {
     /** Next video / post / reel: one full screen down (TikTok, Shorts, Reels feeds). */
     data object NextItem : Command()
     data object PreviousItem : Command()
+    /** Bring the [n]th video/result/post (1-based) into view, without opening it. */
+    data class ScrollToNth(val n: Int) : Command()
     data object ZoomIn : Command()
     data object ZoomOut : Command()
 
     // Video
+    /** Plays the video on screen, or opens the item last scrolled to. */
     data object Play : Command()
     data object Pause : Command()
     data object Mute : Command()
     data object Unmute : Command()
 
     // Interacting with the page
-    /**
-     * Tap the button or link whose label best matches one of [labels].
-     * [fallbackSearch] means: if nothing on the page matches, search for [spoken] instead.
-     */
-    data class Tap(val spoken: String, val labels: List<String>, val fallbackSearch: Boolean) : Command()
+    /** Tap the button or link whose label best matches one of [labels]. */
+    data class Tap(val spoken: String, val labels: List<String>) : Command()
     /** Open the [n]th video/result/post on the page (1-based). */
     data class TapNth(val n: Int) : Command()
     data class TypeText(val text: String, val submit: Boolean) : Command()
@@ -42,102 +42,189 @@ sealed class Command {
     // Arrow Os itself
     data object Help : Command()
     data object StopListening : Command()
-    data class Unknown(val heard: String) : Command()
+
+    /** Didn't start with "tap" or "search", so Arrow Os does nothing. */
+    data class Ignored(val heard: String) : Command()
 }
 
 /**
- * Turns recognized speech or typed text into [Command]s. Pure Kotlin, no Android
- * types, so it is covered by plain JVM unit tests.
+ * Arrow Os understands two command words:
+ *
+ *  - **search** + words: searches for those words ("search Jeff Bezos",
+ *    "search cats on TikTok").
+ *  - **tap** + what to do: does it on screen ("tap like this video",
+ *    "tap play the second video on this page", "tap scroll to the second video and play it",
+ *    "tap open YouTube", "tap home").
+ *
+ * Anything else ("Jeff Bezos" on its own) is [Command.Ignored] and does nothing.
+ *
+ * Pure Kotlin, no Android types, so it is covered by plain JVM unit tests.
  */
 object CommandParser {
 
-    private val openVerbs = listOf("open", "launch", "start", "go to", "take me to", "switch to", "show me", "show")
-    private val searchVerbs = listOf("search for", "search", "find", "look for", "look up", "play", "watch")
-    private val tapVerbs = listOf("click on", "click", "tap on", "tap", "press on", "press", "select", "hit", "choose", "pick")
-    private val itemWords = "video|videos|post|posts|reel|reels|clip|short|shorts|one|item|story|tiktok|page|result"
+    private const val TAP = "tap"
+    private const val SEARCH = "search"
+
+    private val itemWords = "video|videos|post|posts|reel|reels|clip|short|shorts|one|item|story|result|results|link|song|movie|episode"
 
     private val ordinals = mapOf(
-        "first" to 1, "1st" to 1, "top" to 1, "1" to 1,
-        "second" to 2, "2nd" to 2, "2" to 2,
-        "third" to 3, "3rd" to 3, "3" to 3,
-        "fourth" to 4, "4th" to 4, "4" to 4,
-        "fifth" to 5, "5th" to 5, "5" to 5,
-        "sixth" to 6, "6th" to 6, "6" to 6,
+        "first" to 1, "1st" to 1, "1" to 1, "one" to 1,
+        "second" to 2, "2nd" to 2, "2" to 2, "two" to 2,
+        "third" to 3, "3rd" to 3, "3" to 3, "three" to 3,
+        "fourth" to 4, "4th" to 4, "4" to 4, "four" to 4,
+        "fifth" to 5, "5th" to 5, "5" to 5, "five" to 5,
+        "sixth" to 6, "6th" to 6, "6" to 6, "six" to 6,
+        "seventh" to 7, "7th" to 7, "7" to 7, "seven" to 7,
+        "eighth" to 8, "8th" to 8, "8" to 8, "eight" to 8,
+        "ninth" to 9, "9th" to 9, "9" to 9, "nine" to 9,
+        "tenth" to 10, "10th" to 10, "10" to 10, "ten" to 10,
     )
+    private val ordinalPattern = ordinals.keys.sortedByDescending { it.length }.joinToString("|")
 
     /** Page buttons people ask for by name, with the labels sites use for them. */
     private val pageButtons: List<Pair<Regex, List<String>>> = listOf(
-        Regex("^(like|love|heart|double tap)( (it|this|that|the \\w+|this \\w+))?$") to listOf("like", "love", "heart"),
-        Regex("^((open|show|read|see) )?(the )?comments?( (it|this|that|section))?$") to listOf("comment", "comments"),
-        Regex("^share( (it|this|that|the \\w+|this \\w+))?$") to listOf("share"),
-        Regex("^follow( (him|her|them|this \\w+|the \\w+|creator|account|user|page))?$") to listOf("follow"),
-        Regex("^subscribe( (to )?(him|her|them|this \\w+|the \\w+|channel))?$") to listOf("subscribe"),
-        Regex("^(save|bookmark|favou?rite)( (it|this|that|the \\w+|this \\w+))?$") to listOf("save", "bookmark", "favorite", "favourite"),
-        Regex("^(dislike)( (it|this|that|the \\w+|this \\w+))?$") to listOf("dislike"),
-        Regex("^(log ?in|sign ?in)$") to listOf("log in", "sign in", "login"),
-        Regex("^(sign ?up|create account|register)$") to listOf("sign up", "create account", "register"),
-        Regex("^(open )?(the )?menu$") to listOf("menu", "more", "open menu"),
+        Regex("^(like|love|heart|double tap)( (it|this|that|the \\w+|this \\w+))?( (button|icon))?$") to listOf("like", "love", "heart"),
+        Regex("^((open|show|read|see) )?(the )?comments?( (it|this|that|section|button|icon))?$") to listOf("comment", "comments"),
+        Regex("^share( (it|this|that|the \\w+|this \\w+|button|icon))?$") to listOf("share"),
+        Regex("^follow( (him|her|them|this \\w+|the \\w+|creator|account|user|page|button))?$") to listOf("follow"),
+        Regex("^subscribe( (to )?(him|her|them|this \\w+|the \\w+|channel|button))?$") to listOf("subscribe"),
+        Regex("^(save|bookmark|favou?rite)( (it|this|that|the \\w+|this \\w+|button|icon))?$") to listOf("save", "bookmark", "favorite", "favourite"),
+        Regex("^dislike( (it|this|that|the \\w+|this \\w+|button|icon))?$") to listOf("dislike"),
+        Regex("^(log ?in|sign ?in)( button)?$") to listOf("log in", "sign in", "login"),
+        Regex("^(sign ?up|create account|register)( button)?$") to listOf("sign up", "create account", "register"),
+        Regex("^(open )?(the )?menu( button| icon)?$") to listOf("menu", "more", "open menu"),
         Regex("^(open )?(my )?(profile|account)$") to listOf("profile", "account", "you"),
         Regex("^(open )?(my )?(notifications|inbox|messages)$") to listOf("notifications", "inbox", "messages"),
-        Regex("^(skip|skip ad|skip ads|skip the ad)$") to listOf("skip ad", "skip ads", "skip"),
+        Regex("^skip( the)?( ad| ads)?( button)?$") to listOf("skip ad", "skip ads", "skip"),
     )
 
     /**
-     * Parses one instruction, or several joined with "then" / "and then" / "and"
-     * ("open TikTok then next video"). Joined parts are only split up when every
-     * part is understood on its own, so "search cats and dogs" stays one search.
+     * Parses one input into the commands to run, in order. Several commands can be
+     * joined: "tap open TikTok then search cats", or inside one tap,
+     * "tap scroll to the second video and play it".
      */
     fun parseAll(raw: String): List<Command> {
         val text = normalize(raw)
-        val parts = text.split(Regex(" (?:and then|then|after that|and) ")).map { it.trim() }.filter { it.isNotEmpty() }
-        if (parts.size > 1) {
-            val commands = parts.map { parse(it) }
-            if (commands.none { it is Command.Unknown }) return commands
+        if (!startsWithCommandWord(text)) return listOf(Command.Ignored(raw))
+
+        // Split before each new "tap"/"search": "tap open tiktok and then search cats".
+        val segments = text.split(Regex(" (?:and then|then|and|after that) (?=(?:$TAP|$SEARCH) )"))
+        return segments.flatMap { segment ->
+            when {
+                segment.startsWith("$SEARCH ") -> listOfNotNull(parseSearch(segment.removePrefix("$SEARCH ")))
+                segment.startsWith("$TAP ") -> parseTapBody(segment.removePrefix("$TAP "))
+                else -> emptyList()
+            }
+        }.ifEmpty { listOf(Command.Ignored(raw)) }
+    }
+
+    /** The first command of [raw]; handy where only one is expected. */
+    fun parse(raw: String): Command = parseAll(raw).first()
+
+    private fun startsWithCommandWord(text: String) = text.startsWith("$TAP ") || text.startsWith("$SEARCH ")
+
+    // ---------- search ----------
+
+    private fun parseSearch(body: String): Command? {
+        var query = body.trim().removePrefix("for ").trim()
+        if (query.isEmpty()) return null
+
+        // "search on tiktok for cats" / "search tiktok for cats"
+        Regex("^(?:on |in )?(.+?) for (.+)$").find(query)?.let { m ->
+            val app = exactApp(m.groupValues[1])
+            if (app != null) return Command.Search(m.groupValues[2].trim(), app)
         }
-        return listOf(parse(raw))
+
+        // "search cats on tiktok"
+        var app: ArrowApp? = null
+        Regex("^(.+) (?:on|in|using|with) (.+)$").find(query)?.let { m ->
+            val candidate = exactApp(m.groupValues[2].removeSuffix(" app").trim())
+            if (candidate != null) {
+                app = candidate
+                query = m.groupValues[1].trim()
+            }
+        }
+        return Command.Search(query, app)
     }
 
-    fun parse(raw: String): Command {
-        val text = normalize(raw)
-        if (text.isEmpty()) return Command.Unknown(raw)
+    // ---------- tap ----------
 
-        exactCommand(text)?.let { return it }
+    /**
+     * Everything after "tap". Several actions can be joined with "and" / "then"
+     * ("scroll to the second video and play it"), but only when every part is an
+     * action Arrow Os knows, so "tap Tom and Jerry" still taps the thing called
+     * "Tom and Jerry".
+     */
+    private fun parseTapBody(rawBody: String): List<Command> {
+        val body = cleanTapBody(rawBody)
+        if (body.isEmpty()) return emptyList()
+        // "type happy birthday and send" is one step, whatever the typed words contain.
+        parseTyping(body)?.let { return listOf(it) }
+
+        val parts = body.split(Regex(" (?:and then|then|and|after that) ")).map { cleanTapBody(it) }.filter { it.isNotEmpty() }
+        if (parts.size > 1) {
+            val actions = parts.map { knownAction(it) }
+            if (actions.all { it != null }) return actions.filterNotNull()
+        }
+        return listOf(knownAction(body) ?: tapByName(body))
+    }
+
+    private fun cleanTapBody(raw: String): String {
+        var t = raw.trim().removePrefix("$TAP ").trim().removePrefix("on ").trim()
+        for (suffix in listOf(" on this page", " on the page", " on this screen", " on the screen", " here", " for me")) {
+            t = t.removeSuffix(suffix).trim()
+        }
+        return t
+    }
+
+    /** "tap Shorts", "tap the like icon", "tap Tom and Jerry": tap whatever has that name. */
+    private fun tapByName(body: String): Command {
+        val target = body.removePrefix("the ").trim()
+            .removeSuffix(" button").removeSuffix(" icon").removeSuffix(" link").removeSuffix(" tab").trim()
+        return Command.Tap(target, listOf(target))
+    }
+
+    /** A specific action Arrow Os knows how to do, or null if [text] is just a name to tap. */
+    private fun knownAction(raw: String): Command? {
+        val text = raw.removePrefix("the ").trim()
+        exactAction(text)?.let { return it }
         parseTyping(text)?.let { return it }
-        parseTap(text)?.let { return it }
+        parseScrollToNth(text)?.let { return it }
         parseNth(text)?.let { return it }
-        parseScrollAndFeed(text)?.let { return it }
-        parsePageButton(text)?.let { return it }
-        parseSearch(text)?.let { return it }
-        parseOpen(text)?.let { return it }
-
-        // Just saying the app's name ("youtube") opens it.
-        exactApp(text)?.let { return Command.Open(it) }
-
-        return Command.Unknown(raw)
+        parseFeedAndScroll(text)?.let { return it }
+        pageButtons.firstOrNull { (regex, _) -> regex.matches(text) }?.let { (_, labels) ->
+            return Command.Tap(labels.first(), labels)
+        }
+        parseOpenApp(text)?.let { return it }
+        // "tap click subscribe", "tap press next": the extra verb is fine.
+        Regex("^(?:click|press|select|hit|choose|pick)(?: on)? (.+)$").find(text)?.let { m ->
+            return knownAction(m.groupValues[1]) ?: tapByName(m.groupValues[1])
+        }
+        return null
     }
 
-    private fun exactCommand(text: String): Command? = when (text) {
-        "back", "go back", "previous page", "return", "back page", "go to previous page", "last page" -> Command.Back
+    private fun exactAction(text: String): Command? = when (text) {
+        "back", "go back", "back button", "previous page", "return", "go to previous page" -> Command.Back
         "forward", "go forward" -> Command.Forward
-        "home", "go home", "home screen", "go to home", "go to home screen", "back to home", "go back home",
-        "close", "close app", "close it", "close this", "exit", "exit app", "quit", "quit app" -> Command.Home
+        "home", "go home", "home screen", "home button", "go to home", "go to home screen", "back to home",
+        "go back home", "close", "close app", "close it", "close this", "exit", "exit app" -> Command.Home
         "reload", "refresh", "reload page", "refresh page", "reload it", "refresh it" -> Command.Reload
-        "stop listening", "be quiet", "mute mic", "mic off", "turn off mic", "stop voice", "voice off" -> Command.StopListening
-        "help", "what can i say", "what can you do", "commands", "show commands", "list commands" -> Command.Help
-        "play", "play it", "play video", "play the video", "play this", "resume", "continue", "unpause",
-        "start video", "start it", "continue playing", "keep playing" -> Command.Play
-        "pause", "pause it", "pause video", "pause the video", "stop", "stop it", "stop video",
-        "stop the video", "stop playing", "hold on", "wait" -> Command.Pause
+        "stop listening", "mic off", "turn off mic", "turn off the mic", "voice off" -> Command.StopListening
+        "help", "commands", "show commands" -> Command.Help
+        "play", "play it", "play video", "play the video", "play this", "play that", "play this video",
+        "resume", "continue", "unpause", "start video", "start it" -> Command.Play
+        "pause", "pause it", "pause video", "pause the video", "pause this", "stop", "stop it", "stop video",
+        "stop the video", "stop playing" -> Command.Pause
         "mute", "mute it", "mute video", "mute the video", "sound off", "volume off", "turn off sound",
-        "turn off the sound", "silence" -> Command.Mute
+        "turn off the sound" -> Command.Mute
         "unmute", "unmute it", "unmute video", "sound on", "volume on", "turn on sound", "turn on the sound" -> Command.Unmute
-        "zoom in", "bigger", "make it bigger" -> Command.ZoomIn
-        "zoom out", "smaller", "make it smaller" -> Command.ZoomOut
-        "enter", "press enter", "submit", "send", "go", "ok", "okay", "done" -> Command.PressEnter
+        "zoom in" -> Command.ZoomIn
+        "zoom out" -> Command.ZoomOut
+        "enter", "press enter", "submit", "send", "search button" -> Command.PressEnter
         else -> null
     }
 
-    /** "type hello", "write happy birthday and send", "enter cats and search". */
+    /** "type happy birthday and send" / "write hello". */
     private fun parseTyping(text: String): Command? {
         val m = Regex("^(?:type|write|input|enter)(?: in)? (.+?)(?: (?:and|then) (search|enter|submit|send|go|post|press enter))?$")
             .find(text) ?: return null
@@ -146,48 +233,40 @@ object CommandParser {
         return Command.TypeText(typed, submit = m.groupValues[2].isNotEmpty())
     }
 
-    /** "click subscribe", "tap on the like button", "press next". */
-    private fun parseTap(text: String): Command? {
-        val verb = tapVerbs.firstOrNull { text.startsWith("$it ") } ?: return null
-        var target = text.removePrefix("$verb ").trim().removePrefix("the ").trim()
-        if (target == "enter") return Command.PressEnter
-        parseNth(target)?.let { return it }
-        target = target.removeSuffix(" button").removeSuffix(" icon").removeSuffix(" link").removeSuffix(" tab").trim()
-        if (target.isEmpty()) return null
-        pageButtonFor(target)?.let { return it }
-        return Command.Tap(target, listOf(target), fallbackSearch = false)
+    /** "scroll to the second video", "go to the third result". */
+    private fun parseScrollToNth(text: String): Command? {
+        val m = Regex("^(?:scroll|go|move|jump|swipe)(?: down| up)? to (?:the )?(?:number )?($ordinalPattern)(?: ($itemWords))?$")
+            .find(text) ?: return null
+        return Command.ScrollToNth(ordinals.getValue(m.groupValues[1]))
     }
 
-    /** "open the first video", "play the second one", "third result". */
+    /** "play the second video", "open the first result", "third one". */
     private fun parseNth(text: String): Command? {
         val m = Regex(
-            "^(?:(?:open|play|watch|click|tap|select|choose|pick|show|go to)(?: on)? )?(?:the )?(?:number )?" +
-                "(${ordinals.keys.joinToString("|")})(?: ($itemWords))?$",
+            "^(?:(?:open|play|watch|view|show|select|choose|pick)(?: on)? )?(?:the )?(?:number )?" +
+                "($ordinalPattern)(?: ($itemWords))?$",
         ).find(text) ?: return null
-        // A bare number on its own ("2") is too likely to be noise.
-        if (m.groupValues[2].isEmpty() && m.groupValues[1].all { it.isDigit() } && !text.contains(' ')) return null
+        // A bare number ("tap 2") is fine; "tap one" alone is too vague.
+        if (m.groupValues[1] == "one" && m.groupValues[2].isEmpty()) return null
         return Command.TapNth(ordinals.getValue(m.groupValues[1]))
     }
 
-    private fun parseScrollAndFeed(text: String): Command? {
-        // "search for the next episode" is a search, not a swipe.
-        if (listOf("search ", "find ", "look for ", "look up ").any { text.startsWith(it) }) return null
+    private fun parseFeedAndScroll(text: String): Command? {
         val words = text.split(' ').toSet()
         val mentionsItem = words.any { it in itemWords.split('|') }
 
-        // Next / previous video, post or reel.
-        if ("previous" in words || ("last" in words && mentionsItem) ||
-            text == "swipe down" || text.startsWith("go back to the previous") || "before" in words && mentionsItem
+        if ("previous" in words || ("last" in words && mentionsItem) || text == "swipe down" ||
+            ("before" in words && mentionsItem)
         ) {
             return Command.PreviousItem
         }
-        if ("next" in words || "skip" in words && mentionsItem || "another" in words && mentionsItem ||
-            text == "swipe up" || text == "swipe" || text.startsWith("swipe to")
+        if ("next" in words || ("skip" in words && mentionsItem) || ("another" in words && mentionsItem) ||
+            text == "swipe up" || text == "swipe"
         ) {
             return Command.NextItem
         }
 
-        val isScroll = words.any { it in setOf("scroll", "swipe", "move", "page") } || text in setOf("down", "up", "more", "show more", "see more")
+        val isScroll = words.any { it in setOf("scroll", "swipe") } || text in setOf("down", "up", "page down", "page up")
         if (!isScroll) return null
         return when {
             "top" in words || "beginning" in words || "start" in words -> Command.ScrollTop
@@ -197,57 +276,22 @@ object CommandParser {
         }
     }
 
-    private fun parsePageButton(text: String): Command? = pageButtonFor(text)
-
-    private fun pageButtonFor(text: String): Command? {
-        val (_, labels) = pageButtons.firstOrNull { (regex, _) -> regex.matches(text) } ?: return null
-        return Command.Tap(labels.first(), labels, fallbackSearch = false)
-    }
-
-    private fun parseOpen(text: String): Command? {
-        val verb = openVerbs.firstOrNull { text.startsWith("$it ") } ?: return null
-        val rest = text.removePrefix("$verb ").trim()
-        if (rest == "home" || rest == "home screen") return Command.Home
-        ArrowApp.fromSpoken(rest)?.let { return Command.Open(it) }
-        val target = rest.removePrefix("the ").removePrefix("my ").trim()
-        if (target.isEmpty()) return null
-        // "open settings", "show me cats": tap it if it's on the page, otherwise search for it.
-        return Command.Tap(target, listOf(target), fallbackSearch = true)
-    }
-
-    private fun parseSearch(text: String): Command? {
-        val verb = searchVerbs.firstOrNull { text.startsWith("$it ") } ?: return null
-        var body = text.removePrefix("$verb ").trim()
-
-        // "watch youtube" means open it, not search for the word "youtube".
-        exactApp(body)?.let { return Command.Open(it) }
-
-        // "search on tiktok for cats" / "search tiktok for cats"
-        Regex("^(?:on |in )?(.+?) for (.+)$").find(body)?.let { m ->
-            val app = exactApp(m.groupValues[1])
-            if (app != null) return Command.Search(m.groupValues[2].trim(), app)
-        }
-
-        // "search cats on tiktok" / "play music on youtube"
-        var app: ArrowApp? = null
-        Regex("^(.+) (?:on|in|using|with) (.+)$").find(body)?.let { m ->
-            val candidate = ArrowApp.fromSpoken(m.groupValues[2])
-            if (candidate != null) {
-                app = candidate
-                body = m.groupValues[1].trim()
-            }
-        }
-
-        if (body.isEmpty()) return null
-        return Command.Search(body, app)
+    /** "open YouTube", "go to TikTok", or just "YouTube". */
+    private fun parseOpenApp(text: String): Command? {
+        exactApp(text)?.let { return Command.Open(it) }
+        val m = Regex("^(?:open|launch|start|go to|switch to|show) (.+)$").find(text) ?: return null
+        return exactApp(m.groupValues[1].removeSuffix(" app").trim())?.let { Command.Open(it) }
     }
 
     private fun exactApp(text: String): ArrowApp? {
-        val t = text.trim()
+        val t = text.trim().removePrefix("the ").trim()
         return ArrowApp.entries.firstOrNull { app -> app.aliases.any { it == t } }
     }
 
-    /** Lowercase, strip punctuation and polite filler so "Please open YouTube!" == "open youtube". */
+    /**
+     * Lowercase, strip punctuation and polite filler so "Hey Arrow, please tap like!"
+     * becomes "tap like". "Tab" is accepted as a common mishearing of "tap".
+     */
     fun normalize(raw: String): String {
         var t = raw.lowercase()
             .replace(Regex("[^a-z0-9\\s]"), " ")
@@ -255,8 +299,7 @@ object CommandParser {
             .trim()
         val fillers = listOf(
             "hey arrow", "ok arrow", "okay arrow", "arrow", "please", "can you", "could you", "would you",
-            "will you", "i want to", "i wanna", "i would like to", "i d like to", "let s", "lets", "now", "just",
-            "kindly", "hey", "ok", "okay",
+            "will you", "i want to", "i wanna", "i would like to", "now", "just", "kindly", "hey", "ok", "okay",
         )
         var changed = true
         while (changed) {
@@ -265,9 +308,13 @@ object CommandParser {
                 if (t.startsWith("$f ")) { t = t.removePrefix("$f ").trim(); changed = true }
             }
         }
-        for (suffix in listOf(" please", " for me", " now", " right now")) {
+        for (suffix in listOf(" please", " now", " right now")) {
             t = t.removeSuffix(suffix).trim()
         }
+        // Speech recognizers often hear "tap" as "tab", "tapped" or "top".
+        t = t.replace(Regex("^(tab|tapped|taps|tip) "), "tap ")
+        t = t.replace(Regex(" (?:and|then) (tab|tapped|taps) "), " and tap ")
+        t = t.replace(Regex("^(searching|searched|search for) "), "search ")
         return t
     }
 }

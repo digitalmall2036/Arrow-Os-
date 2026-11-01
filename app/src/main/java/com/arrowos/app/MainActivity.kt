@@ -280,18 +280,21 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     }
 
     /**
-     * Runs what the user said or typed. One input can hold several commands
-     * ("open TikTok then next video"); they run one after another.
+     * Runs what the user said or typed. Only input that starts with "tap" or "search"
+     * does anything. One input can hold several steps
+     * ("tap scroll to the second video and play it"); they run one after another.
      */
     private fun handleInput(text: String, typed: Boolean) {
+        val commands = CommandParser.parseAll(text)
+        if (commands.singleOrNull() is Command.Ignored) {
+            // Not a command: do nothing. Only a typed line gets a hint, since the
+            // always-on mic hears plenty of talk that isn't meant for Arrow Os.
+            binding.voiceStatus.text = getString(R.string.say_ignored, text.trim())
+            if (typed) toast(getString(R.string.say_ignored, text.trim()))
+            return
+        }
         binding.voiceStatus.text = "“$text”"
         handler.removeCallbacksAndMessages(null) // a new instruction replaces an unfinished sequence
-        var commands = CommandParser.parseAll(text)
-        val only = commands.singleOrNull()
-        if (only is Command.Unknown && typed) {
-            // Typing is deliberate, so never leave it undone: search for it in the current app.
-            commands = listOf(Command.Search(text.trim(), null))
-        }
         runSequence(commands, 0)
     }
 
@@ -384,16 +387,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
             is Command.Tap -> {
                 if (!inApp) {
-                    if (command.fallbackSearch) perform(Command.Search(command.spoken, null))
-                    else toast("Open an app first, then say \"${command.spoken}\"")
+                    toast("Open an app first, for example \"tap open TikTok\"")
                     return
                 }
                 web.tap(command.labels) { ok ->
-                    when {
-                        ok -> confirm("Tapped ${command.spoken}")
-                        command.fallbackSearch -> perform(Command.Search(command.spoken, null))
-                        else -> toast("Couldn't find \"${command.spoken}\" on this page")
-                    }
+                    if (ok) confirm("Tapped ${command.spoken}") else toast("Couldn't find \"${command.spoken}\" on this page")
                 }
             }
             is Command.TapNth -> inPage {
@@ -419,29 +417,40 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 voice.stop()
                 binding.voiceStatus.text = getString(R.string.voice_off)
             }
-            is Command.Unknown -> toast(getString(R.string.say_unknown, command.heard))
+            is Command.ScrollToNth -> inPage {
+                web.scrollToNth(command.n) { ok -> toast(if (ok) "Number ${command.n}" else "Couldn't find item ${command.n}") }
+            }
+            is Command.Ignored -> Unit
         }
     }
 
     /** Runs [action] only when an app is open; on the home screen, explains what to do. */
     private inline fun inPage(action: () -> Unit) {
-        if (inApp) action() else toast("Open an app first, for example say \"open TikTok\"")
+        if (inApp) action() else toast("Open an app first, for example \"tap open TikTok\"")
     }
 
     private fun showHelp() {
         AlertDialog.Builder(this)
-            .setTitle("Things you can say or type")
+            .setTitle("Start every command with \"tap\" or \"search\"")
             .setMessage(
                 """
-                Apps: open YouTube · open TikTok · go home · go back
-                Search: search cats on TikTok · play music on YouTube
-                Feeds: next video · previous video · scroll down · scroll up · go to top
-                Video: play · pause · mute · unmute
-                Buttons: like · comment · share · follow · subscribe · save · skip ad
-                Tap anything: tap Shorts · click Following · open the first video
-                Typing: type happy birthday and send · press enter
-                Chain: open TikTok then next video
-                Voice: stop listening (tap the mic to turn it back on)
+                SEARCH finds things:
+                search Tom and Jerry · search Jeff Bezos · search cats on TikTok
+
+                TAP does anything on screen:
+                tap open YouTube · tap home · tap back
+                tap like this video · tap comment · tap share · tap follow · tap subscribe
+                tap play the second video on this page
+                tap scroll to the second video and play it
+                tap next video · tap previous video · tap scroll down · tap scroll to the top
+                tap pause · tap play · tap mute · tap unmute · tap skip ad
+                tap Shorts · tap Following (any button or link by its name)
+                tap type happy birthday and send
+                tap stop listening
+
+                Chain them: tap open TikTok then search cats
+
+                Anything that doesn't start with tap or search is ignored.
                 """.trimIndent(),
             )
             .setPositiveButton("OK", null)
