@@ -13,7 +13,7 @@ Apps inside Arrow Os (v1):
 | TikTok | tiktok.com |
 | 9apps | 9apps.com |
 
-Every app opens **inside Arrow Os** in its built-in browser, so you never get thrown
+These are the apps' **websites** (their mobile sites), not the installed apps. Every app opens **inside Arrow Os** in its built-in browser, so you never get thrown
 out to another app. Links that try to jump to the real YouTube/Facebook/etc. app are
 kept inside Arrow Os.
 
@@ -63,6 +63,14 @@ anything else (like just saying "Jeff Bezos") is ignored and does nothing.
 | tap type happy birthday and send | Types into the page's text box and sends it |
 | tap help | Shows all of this in the app |
 | tap stop listening | Turns the mic off (tap the mic button to turn it back on) |
+
+**How "tap" finds things (its eyes):** before tapping, Arrow Os scans the whole page:
+every button, link and icon, with its text, accessibility label, tooltip, icon name
+and internal name. It picks the best match for your words, also trying other names
+sites use (for example "next" also matches "›", "Continue" or "Go to next video"),
+and allows one wrong letter. It outlines the chosen spot in blue for a moment, then
+taps it. `tap next` and `tap previous` press the page's own Next/Previous button;
+on feeds without one (TikTok, Shorts) they move to the next video.
 
 Join commands with "then": `tap open TikTok then search cats`.
 

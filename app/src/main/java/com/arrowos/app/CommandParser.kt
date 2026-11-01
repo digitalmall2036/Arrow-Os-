@@ -48,6 +48,37 @@ sealed class Command {
 }
 
 /**
+ * Other names websites use for the same button, so the page scanner can find
+ * "next" even when the button says "›", "Continue" or is labelled "Go to next video".
+ * The user's own word always comes first and wins ties.
+ */
+object TapVocabulary {
+    val next = listOf("next", "next page", "next video", "go to next", "forward", "continue", "›", "»", "→", "chevron right", "arrow right")
+    val previous = listOf("previous", "prev", "previous page", "previous video", "go to previous", "‹", "«", "←", "chevron left", "arrow left")
+
+    private val synonyms: Map<String, List<String>> = mapOf(
+        "next" to next,
+        "previous" to previous,
+        "prev" to previous,
+        "back" to listOf("back", "go back", "navigate up", "previous", "‹", "←", "arrow left"),
+        "close" to listOf("close", "dismiss", "cancel", "not now", "no thanks", "×", "✕", "x"),
+        "menu" to listOf("menu", "more options", "options", "more", "⋮", "☰", "hamburger"),
+        "search" to listOf("search", "search button", "magnifier", "find"),
+        "settings" to listOf("settings", "preferences", "gear", "options"),
+        "more" to listOf("more", "show more", "see more", "read more", "expand", "load more"),
+        "play" to listOf("play", "play video", "watch"),
+        "fullscreen" to listOf("fullscreen", "full screen", "enter full screen"),
+        "full screen" to listOf("full screen", "fullscreen", "enter full screen"),
+        "post" to listOf("post", "publish", "send", "submit"),
+        "send" to listOf("send", "submit", "post"),
+        "ok" to listOf("ok", "okay", "accept", "agree", "confirm", "yes"),
+        "accept" to listOf("accept", "accept all", "agree", "allow", "ok"),
+    )
+
+    fun labelsFor(target: String): List<String> = (listOf(target) + synonyms[target].orEmpty()).distinct()
+}
+
+/**
  * Arrow Os understands two command words:
  *
  *  - **search** + words: searches for those words ("search Jeff Bezos",
@@ -181,7 +212,7 @@ object CommandParser {
     private fun tapByName(body: String): Command {
         val target = body.removePrefix("the ").trim()
             .removeSuffix(" button").removeSuffix(" icon").removeSuffix(" link").removeSuffix(" tab").trim()
-        return Command.Tap(target, listOf(target))
+        return Command.Tap(target, TapVocabulary.labelsFor(target))
     }
 
     /** A specific action Arrow Os knows how to do, or null if [text] is just a name to tap. */

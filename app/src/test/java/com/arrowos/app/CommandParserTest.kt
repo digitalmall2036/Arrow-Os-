@@ -57,6 +57,10 @@ class CommandParserTest {
 
     @Test fun tapAnythingByName() {
         assertEquals(Command.Tap("shorts", listOf("shorts")), parse("tap Shorts"))
+        // The user's word comes first, then other names sites use for the same button.
+        val settingsLabels = (parse("tap settings") as Command.Tap).labels
+        assertEquals("settings", settingsLabels.first())
+        assertTrue("preferences" in settingsLabels && "gear" in settingsLabels)
         assertEquals(Command.Tap("following", listOf("following")), parse("tap on Following"))
         // "and" inside a name stays part of the name.
         assertEquals(Command.Tap("tom and jerry", listOf("tom and jerry")), parse("tap Tom and Jerry"))

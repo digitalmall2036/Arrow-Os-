@@ -25,8 +25,19 @@ class WebActions(private val webView: WebView) {
     fun mute(done: (Boolean) -> Unit = {}) = run("media('mute')", done)
     fun unmute(done: (Boolean) -> Unit = {}) = run("media('unmute')", done)
 
-    /** Taps the visible button/link whose label best matches one of [labels]. */
-    fun tap(labels: List<String>, done: (Boolean) -> Unit) = run("tap(${JSONArray(labels)})", done)
+    /**
+     * Scans the page, finds the visible thing that best matches one of [labels]
+     * (its text, accessibility label, tooltip, icon or internal name), outlines it
+     * and taps it. [done] gets the name of what was tapped, or null if nothing fit.
+     */
+    fun tap(labels: List<String>, done: (String?) -> Unit) {
+        webView.evaluateJavascript(
+            "$HELPERS\n;(function(){try{return String(window.__arrow.tap(${JSONArray(labels)})||'')}catch(e){return ''}})()",
+        ) { result ->
+            val name = try { JSONArray("[$result]").optString(0) } catch (e: Exception) { "" }
+            done(name.takeIf { it.isNotBlank() && it != "null" })
+        }
+    }
 
     /** Opens the [n]th video/result/post (1-based) visible on the page. */
     fun tapNth(n: Int, done: (Boolean) -> Unit) = run("nth($n)", done)
@@ -72,21 +83,6 @@ class WebActions(private val webView: WebView) {
     return root();
   }
   function height(s){ return (s===root())?innerHeight:s.clientHeight; }
-  function label(e){
-    var t=(e.getAttribute('aria-label')||e.getAttribute('title')||'').trim();
-    if(!t) t=(e.innerText||e.value||'').trim();
-    if(!t){ var img=e.querySelector&&e.querySelector('img[alt]'); if(img) t=img.alt; }
-    return t.replace(/\s+/g,' ').toLowerCase();
-  }
-  function wordMatch(text,word){
-    var w=word.replace(/[.*+?^${'$'}{}()|[\]\\]/g,'\\${'$'}&');
-    return new RegExp('(^|[^a-z])'+w+'([^a-z]|${'$'})').test(text);
-  }
-  function clickable(){
-    return [].slice.call(document.querySelectorAll(
-      'a,button,[role=button],[role=link],[role=tab],[role=menuitem],[aria-label],[title],input[type=submit],input[type=button],summary,[onclick],[tabindex]'
-    )).filter(visible);
-  }
   function fire(e){
     try{ e.scrollIntoView({block:'center'}); }catch(x){}
     var r=e.getBoundingClientRect(), x=r.left+r.width/2, y=r.top+r.height/2;
@@ -119,6 +115,123 @@ class WebActions(private val webView: WebView) {
     }
     out.sort(function(x,y){ return Math.abs(x.top-y.top)<20?x.left-y.left:x.top-y.top; });
     return out.map(function(o){ return o.a; });
+  }
+
+  // ---------- eyes ----------
+  var CLICKABLE='a,button,input,select,textarea,summary,label,[role],[onclick],[tabindex],[aria-label],[title],[data-e2e],[data-testid],[jsaction],ytm-button-renderer,yt-icon-button,tp-yt-paper-icon-button';
+  function allElements(rootNode,out){
+    var list=rootNode.querySelectorAll(CLICKABLE+',svg,img,span,div');
+    for(var i=0;i<list.length;i++){
+      var e=list[i]; out.push(e);
+      if(e.shadowRoot) allElements(e.shadowRoot,out);
+    }
+    return out;
+  }
+  function isClickable(e){
+    if(!e||e.nodeType!==1) return false;
+    var t=e.tagName;
+    if(t==='A'||t==='BUTTON'||t==='SUMMARY'||t==='SELECT'||(t==='INPUT'&&e.type!=='hidden')) return true;
+    var role=e.getAttribute('role');
+    if(role&&/button|link|tab|menuitem|option|checkbox|switch|radio/.test(role)) return true;
+    if(e.hasAttribute('onclick')||e.hasAttribute('jsaction')) return true;
+    if(e.tabIndex>=0&&e.hasAttribute('tabindex')) return true;
+    try{ if(getComputedStyle(e).cursor==='pointer') return true; }catch(x){}
+    return false;
+  }
+  function clickTarget(e){
+    // An icon or text inside a button: tap the button itself.
+    var n=e;
+    for(var i=0;i<6&&n&&n!==document.body;i++){
+      if(isClickable(n)) return n;
+      n=n.parentElement||(n.getRootNode&&n.getRootNode().host);
+    }
+    return null;
+  }
+  function words(str){
+    return (str||'').replace(/([a-z])([A-Z])/g,'${'$'}1 ${'$'}2').replace(/[_\-\.\/:]+/g,' ')
+      .toLowerCase().replace(/\s+/g,' ').trim();
+  }
+  // Everything that tells us what an element is, strongest evidence first.
+  function names(e){
+    var out=[];
+    function add(v,w){ v=words(v); if(v&&v.length<=140) out.push({t:v,w:w}); }
+    add(e.getAttribute('aria-label'),1);
+    var lb=e.getAttribute('aria-labelledby');
+    if(lb){ lb.split(' ').forEach(function(id){ var x=document.getElementById(id); if(x) add(x.textContent,1); }); }
+    add(e.getAttribute('title'),1);
+    add(e.getAttribute('alt'),0.95);
+    add(e.getAttribute('placeholder'),0.9);
+    if(e.tagName==='INPUT') add(e.value,0.9);
+    var txt=(e.innerText||e.textContent||'').trim();
+    if(txt&&txt.length<=80) add(txt,1);
+    var svgTitle=e.querySelector&&e.querySelector('svg title'); if(svgTitle) add(svgTitle.textContent,0.9);
+    var img=e.querySelector&&e.querySelector('img[alt]'); if(img) add(img.getAttribute('alt'),0.85);
+    var lbl=e.querySelector&&e.querySelector('[aria-label]'); if(lbl&&lbl!==e) add(lbl.getAttribute('aria-label'),0.85);
+    ['data-e2e','data-testid','data-tooltip','data-title','name','id'].forEach(function(a){ add(e.getAttribute(a),0.7); });
+    if(typeof e.className==='string') add(e.className,0.5);
+    var icon=e.querySelector&&e.querySelector('[class*=icon],[icon],yt-icon,svg[class]');
+    if(icon){ add(icon.getAttribute('icon'),0.6); if(typeof icon.className==='string') add(icon.className,0.45);
+      else if(icon.className&&icon.className.baseVal) add(icon.className.baseVal,0.45); }
+    return out;
+  }
+  function close(a,b){
+    // Allows one wrong letter for longer words, so "subscibe" still finds "subscribe".
+    if(a===b) return true; if(a.length<5||Math.abs(a.length-b.length)>1) return false;
+    var i=0,j=0,edits=0;
+    while(i<a.length&&j<b.length){
+      if(a[i]===b[j]){i++;j++;continue;}
+      if(++edits>1) return false;
+      if(a.length>b.length) i++; else if(b.length>a.length) j++; else {i++;j++;}
+    }
+    return edits+(a.length-i)+(b.length-j)<=1;
+  }
+  function phraseScore(name,want){
+    if(name===want) return 100;
+    var nw=name.split(' '), ww=want.split(' ');
+    var padded=' '+name+' ';
+    if(padded.indexOf(' '+want+' ')>=0) return name.indexOf(want)===0?85:75;
+    var found=0;
+    ww.forEach(function(w){ if(nw.some(function(n){ return n===w||close(n,w); })) found++; });
+    if(found===ww.length) return 60;
+    if(!/[a-z0-9]/.test(want)&&name.indexOf(want)>=0) return 70; // arrow symbols like "›"
+    return 0;
+  }
+  function see(want){
+    want=want.map(words).filter(function(w){ return w; });
+    var best=null;
+    allElements(document,[]).forEach(function(e){
+      if(!visible(e)) return;
+      var target=clickTarget(e); if(!target) return;
+      var ns=names(e); if(!ns.length) return;
+      var score=0, name='';
+      ns.forEach(function(n){
+        want.forEach(function(w,wi){
+          var s=phraseScore(n.t,w)*n.w;
+          if(wi>0) s*=0.92; // the user's own word beats a synonym
+          s-=Math.min(n.t.length,120)/12;
+          if(s>score){ score=s; name=n.t; }
+        });
+      });
+      if(score<=25) return;
+      if(target===e) score+=6;
+      var r=target.getBoundingClientRect();
+      if(r.width*r.height>innerWidth*innerHeight*0.5) return; // whole-page wrappers aren't buttons
+      if(r.top>=0&&r.bottom<=innerHeight) score+=4;             // fully on screen
+      if(!best||score>best.score) best={el:target,score:score,name:name};
+    });
+    return best;
+  }
+  // Briefly outline what the eyes chose, so the user sees what is being tapped.
+  function show(el){
+    try{
+      var r=el.getBoundingClientRect(), box=document.createElement('div');
+      box.style.cssText='position:fixed;z-index:2147483647;pointer-events:none;border:3px solid #00D1FF;'+
+        'border-radius:10px;box-shadow:0 0 18px #00D1FF;transition:opacity .4s;'+
+        'left:'+(r.left-4)+'px;top:'+(r.top-4)+'px;width:'+(r.width+8)+'px;height:'+(r.height+8)+'px';
+      document.documentElement.appendChild(box);
+      setTimeout(function(){ box.style.opacity='0'; },700);
+      setTimeout(function(){ box.remove(); },1200);
+    }catch(x){}
   }
   function bestVideo(){
     var vs=[].slice.call(document.querySelectorAll('video'));
@@ -158,23 +271,12 @@ class WebActions(private val webView: WebView) {
       else if(what==='unmute'){ v.muted=false; if(v.volume===0) v.volume=1; }
       return true;
     },
+    // The "eyes": scan everything tappable on the page, work out what each thing is,
+    // pick the best match for the words, show it, and tap it. Returns what was tapped.
     tap:function(words){
-      var best=null, bestScore=0;
-      clickable().forEach(function(e){
-        var t=label(e); if(!t||t.length>120) return;
-        words.forEach(function(w){
-          var s=0;
-          if(t===w) s=100;
-          else if(t.indexOf(w)===0&&wordMatch(t,w)) s=80;
-          else if(wordMatch(t,w)) s=60;
-          if(s>0){
-            s-=Math.min(t.length,100)/10;
-            if(e.tagName==='BUTTON'||e.getAttribute('role')==='button') s+=5;
-            if(s>bestScore){ bestScore=s; best=e; }
-          }
-        });
-      });
-      return best?fire(best):false;
+      var hit=see(words); if(!hit) return '';
+      show(hit.el); fire(hit.el);
+      return hit.name||words[0];
     },
     nth:function(n){
       var hit=items()[n-1]; if(!hit) return false;

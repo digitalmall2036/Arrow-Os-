@@ -375,8 +375,18 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             Command.ScrollUp -> inPage { toast("Scrolling up"); web.scroll(-0.8) }
             Command.ScrollTop -> inPage { toast("Back to the top"); web.scrollToTop() }
             Command.ScrollBottom -> inPage { toast("To the bottom"); web.scrollToBottom() }
-            Command.NextItem -> inPage { toast("Next"); web.nextItem(forward = true) }
-            Command.PreviousItem -> inPage { toast("Previous"); web.nextItem(forward = false) }
+            // The eyes look for the page's own Next/Previous button first; feeds without
+            // one (TikTok, Shorts, Reels) just move on to the next video.
+            Command.NextItem -> inPage {
+                web.tap(TapVocabulary.next) { name ->
+                    if (name != null) confirm("Tapped $name") else { toast("Next"); web.nextItem(forward = true) }
+                }
+            }
+            Command.PreviousItem -> inPage {
+                web.tap(TapVocabulary.previous) { name ->
+                    if (name != null) confirm("Tapped $name") else { toast("Previous"); web.nextItem(forward = false) }
+                }
+            }
             Command.ZoomIn -> inPage { binding.webView.zoomIn() }
             Command.ZoomOut -> inPage { binding.webView.zoomOut() }
 
@@ -390,8 +400,15 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                     toast("Open an app first, for example \"tap open TikTok\"")
                     return
                 }
-                web.tap(command.labels) { ok ->
-                    if (ok) confirm("Tapped ${command.spoken}") else toast("Couldn't find \"${command.spoken}\" on this page")
+                binding.voiceStatus.text = getString(R.string.scanning, command.spoken)
+                web.tap(command.labels) { name ->
+                    if (name != null) {
+                        confirm("Tapped ${command.spoken}")
+                        binding.voiceStatus.text = getString(R.string.tapped, name)
+                    } else {
+                        toast("Couldn't find \"${command.spoken}\" on this page")
+                        binding.voiceStatus.text = getString(R.string.not_found, command.spoken)
+                    }
                 }
             }
             is Command.TapNth -> inPage {
