@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Arrow Os</string>
+    <string name="home_tagline">Say \"open YouTube\" or \"search cats on TikTok\"</string>
+    <string name="open_app">Open %1$s</string>
+    <string name="back">Back</string>
+    <string name="home">Home</string>
+    <string name="reload">Reload</string>
+    <string name="mic">Microphone on or off</string>
+
+    <string name="voice_hint">Tap the mic or just speak</string>
+    <string name="voice_listening">Listening…</string>
+    <string name="voice_off">Voice is off. Tap the mic to turn it on.</string>
+    <string name="voice_permission_denied">Arrow Os needs the microphone for voice control. Tap the mic to try again.</string>
+    <string name="voice_unavailable">Voice recognition is not available on this phone. Install or enable the Google app.</string>
+
+    <string name="say_opening">Opening %1$s</string>
+    <string name="say_searching">Searching %1$s on %2$s</string>
+    <string name="say_back">Going back</string>
+    <string name="say_home">Going home</string>
+    <string name="say_reload">Reloading</string>
+    <string name="say_stop">Voice off</string>
+    <string name="say_unknown">Didn\'t understand: \"%1$s\"</string>
+</resources>
