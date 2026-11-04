@@ -3,19 +3,28 @@ package com.arrowos.app
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.DownloadManager
+import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
+import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.text.format.DateUtils
+import android.text.format.Formatter
+import android.util.Base64
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -23,6 +32,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.text.Html
 import android.webkit.CookieManager
+import android.webkit.MimeTypeMap
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -33,6 +43,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -40,12 +51,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.isVisible
 import com.arrowos.app.databinding.ActivityMainBinding
 import com.arrowos.app.databinding.ItemAppTileBinding
+import com.arrowos.app.databinding.ItemArrowFileBinding
 import com.arrowos.app.databinding.ItemDesignerToolBinding
 import com.arrowos.app.databinding.ItemPreviousTabBinding
+import java.io.File
 import java.util.Locale
+import java.util.UUID
 
 class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
@@ -82,6 +97,33 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private lateinit var previous: TabHistory
     private val prefs by lazy { getSharedPreferences("arrow_os", MODE_PRIVATE) }
 
+    /** Arrow Files: every file downloaded in Arrow Os, saved across launches. */
+    private lateinit var files: ArrowFilesIndex
+
+    /** Whose folder downloads go to. Becomes the signed-in account's id once email sign-in exists. */
+    private val filesUser = ArrowFilesIndex.LOCAL_USER
+
+    /** Arrow Files screen state: the type and site filters, and whether Trash is showing. */
+    private var filesKind: FileKind? = null
+    private var filesSource: String? = null
+    private var filesShowTrash = false
+
+    /** "Save to phone" waiting for the storage permission (Android 9 and older only). */
+    private var pendingSaveToPhone: ArrowFile? = null
+    private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val file = pendingSaveToPhone
+        pendingSaveToPhone = null
+        if (granted && file != null) saveToPhone(file) else if (file != null) toast(getString(R.string.files_save_failed))
+    }
+
+    /** The phone tells us when a download finishes; the file is then ready in Arrow Files. */
+    private val downloadDone = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
+            files.byDownloadId(id)?.let { finishDownload(it, announce = true) }
+        }
+    }
+
     /** The user's business and the apps they ticked in the Auto Designer; null until they finish it. */
     private var homeSetup: HomeSetup? = null
 
@@ -112,7 +154,14 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         web = WebActions(binding.webView)
         previous = TabHistory.decode(prefs.getString(PREF_PREVIOUS, null))
         homeSetup = HomeSetup.decode(prefs.getString(PREF_HOME_SETUP, null))
+        files = ArrowFilesIndex.decode(prefs.getString(PREF_FILES, null))
+        ContextCompat.registerReceiver(
+            this, downloadDone, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_EXPORTED,
+        )
+        emptyOldTrash()
+        checkUnfinishedDownloads()
         setupHomeScreen()
+        setupFilesScreen()
         setupDesigner()
         setupPreviousScreen()
         setupBrowser()
@@ -138,6 +187,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        unregisterReceiver(downloadDone)
         voice.destroy()
         tts?.shutdown()
         binding.webView.destroy()
@@ -158,6 +208,16 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         val setup = homeSetup
         val tools = setup?.tools.orEmpty()
         val inflater = LayoutInflater.from(this)
+        // Arrow Files is always the first app, whatever business the user picked.
+        val filesTile = ItemAppTileBinding.inflate(inflater, binding.appGrid, false)
+        filesTile.appIcon.text = ""
+        filesTile.appIcon.setCompoundDrawablesWithIntrinsicBounds(0, R.drawable.ic_folder, 0, 0)
+        filesTile.appIcon.setPadding(0, (20 * resources.displayMetrics.density).toInt(), 0, 0)
+        filesTile.appIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(FILES_COLOR))
+        filesTile.appLabel.text = getString(R.string.files_title)
+        filesTile.root.contentDescription = getString(R.string.open_app, getString(R.string.files_title))
+        filesTile.root.setOnClickListener { showFiles() }
+        binding.appGrid.addView(filesTile.root)
         tools.forEach { tool ->
             val tile = ItemAppTileBinding.inflate(inflater, binding.appGrid, false)
             tile.appIcon.text = tool.initial
@@ -182,6 +242,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private fun showHome() {
         hidePrevious()
+        hideFiles()
         if (homeSetup == null) showDesigner()
         currentApp = null
         binding.homeScreen.isVisible = true
@@ -304,6 +365,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         binding.browserHome.setOnClickListener { showHome() }
         binding.browserReload.setOnClickListener { binding.webView.reload() }
         binding.browserPrevious.setOnClickListener { showPrevious() }
+        binding.browserFiles.setOnClickListener { showFiles() }
     }
 
     /** Keeps every link inside Arrow Os. Returns true when the WebView should NOT load [url] itself. */
@@ -403,26 +465,134 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         view.loadDataWithBaseURL(null, html, "text/html", "utf-8", url)
     }
 
+    /**
+     * Every download goes into the user's Arrow Files folder on the phone:
+     * ArrowFiles/<user>/websites/<site>/<name>. The site is the page the user was on.
+     */
     private fun startDownload(url: String, userAgent: String?, contentDisposition: String?, mimeType: String?) {
+        val pageUrl = binding.webView.url?.takeIf { it.startsWith("http") } ?: url
+        val source = ArrowFilesIndex.sourceOf(pageUrl)
+        if (url.startsWith("data:")) {
+            saveDataUrl(url, source, pageUrl)
+            return
+        }
         if (!url.startsWith("http")) {
-            toast("This file can't be downloaded here")
+            toast(getString(R.string.files_cant_download))
             return
         }
         try {
-            val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
+            val wanted = URLUtil.guessFileName(url, contentDisposition, mimeType)
+            val (name, relPath) = newFilePlace(source, wanted) ?: return
+            val mime = mimeType?.takeIf { it.isNotBlank() && it != "application/octet-stream" } ?: mimeOf(name)
             val request = DownloadManager.Request(Uri.parse(url)).apply {
-                setMimeType(mimeType)
+                setMimeType(mime)
                 CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
                 userAgent?.let { addRequestHeader("User-Agent", it) }
-                setTitle(fileName)
+                setTitle(name)
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalFilesDir(this@MainActivity, Environment.DIRECTORY_DOWNLOADS, fileName)
+                setDestinationInExternalFilesDir(this@MainActivity, null, relPath)
             }
-            getSystemService(DownloadManager::class.java).enqueue(request)
-            toast("Downloading $fileName. Tap the notification when it's done.")
+            val downloadId = getSystemService(DownloadManager::class.java).enqueue(request)
+            files.add(
+                ArrowFile(
+                    id = UUID.randomUUID().toString(), name = name, source = source, kind = FileKind.of(name, mime),
+                    mimeType = mime, size = 0, savedAt = System.currentTimeMillis(), originUrl = pageUrl,
+                    relPath = relPath, status = FileStatus.Downloading, downloadId = downloadId,
+                ),
+            )
+            saveFiles()
+            toast(getString(R.string.files_downloading, name))
         } catch (e: Exception) {
             toast("Download failed: ${e.message}")
         }
+    }
+
+    /** Some sites hand the file over inside the link itself ("data:"); write it straight to Arrow Files. */
+    private fun saveDataUrl(url: String, source: String, pageUrl: String) {
+        try {
+            val header = url.substringBefore(',')
+            val body = url.substringAfter(',', "")
+            val mime = header.removePrefix("data:").substringBefore(';').ifBlank { "application/octet-stream" }
+            val bytes = if (header.contains(";base64")) Base64.decode(body, Base64.DEFAULT) else Uri.decode(body).toByteArray()
+            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+            val (name, relPath) = newFilePlace(source, if (ext != null) "download.$ext" else "download") ?: return
+            val target = File(getExternalFilesDir(null), relPath)
+            target.writeBytes(bytes)
+            files.add(
+                ArrowFile(
+                    id = UUID.randomUUID().toString(), name = name, source = source, kind = FileKind.of(name, mime),
+                    mimeType = mime, size = target.length(), savedAt = System.currentTimeMillis(), originUrl = pageUrl,
+                    relPath = relPath, status = FileStatus.Ready,
+                ),
+            )
+            saveFiles()
+            toast(getString(R.string.files_saved, name))
+        } catch (e: Exception) {
+            toast(getString(R.string.files_failed, "file"))
+        }
+    }
+
+    /** A free name and its path in the user's folder for [source], with the folder created. */
+    private fun newFilePlace(source: String, wanted: String): Pair<String, String>? {
+        val base = getExternalFilesDir(null)
+        if (base == null) {
+            toast(getString(R.string.files_save_failed))
+            return null
+        }
+        val name = files.uniqueName(filesUser, source, wanted) { File(base, ArrowFilesIndex.pathFor(filesUser, source, it)).exists() }
+        val relPath = ArrowFilesIndex.pathFor(filesUser, source, name)
+        File(base, relPath).parentFile?.mkdirs()
+        return name to relPath
+    }
+
+    private fun mimeOf(name: String): String =
+        MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase(Locale.ROOT))
+            ?: "application/octet-stream"
+
+    private fun fileOf(f: ArrowFile): File? = getExternalFilesDir(null)?.let { File(it, f.relPath) }
+
+    /** Marks a download as ready or failed once the phone has finished with it. */
+    private fun finishDownload(f: ArrowFile, announce: Boolean) {
+        var status = -1
+        try {
+            getSystemService(DownloadManager::class.java)
+                .query(DownloadManager.Query().setFilterById(f.downloadId))?.use { c ->
+                    if (c.moveToFirst()) status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                }
+        } catch (e: Exception) {
+            // Fall back to checking the file on disk.
+        }
+        val onDisk = fileOf(f)?.takeIf { it.exists() && it.length() > 0 }
+        val ready = status == DownloadManager.STATUS_SUCCESSFUL || (status == -1 && onDisk != null)
+        val failed = !ready && (status == DownloadManager.STATUS_FAILED || status == -1)
+        if (!ready && !failed) return // still downloading
+        files.update(f.id) {
+            if (ready) it.copy(status = FileStatus.Ready, size = onDisk?.length() ?: it.size, downloadId = -1)
+            else it.copy(status = FileStatus.Failed, downloadId = -1)
+        }
+        saveFiles()
+        if (announce) toast(getString(if (ready) R.string.files_saved else R.string.files_failed, f.name))
+        if (binding.filesScreen.isVisible) renderFiles()
+    }
+
+    /** Downloads that finished (or failed) while Arrow Os was closed. */
+    private fun checkUnfinishedDownloads() {
+        files.all.filter { it.status == FileStatus.Downloading }.forEach { finishDownload(it, announce = false) }
+    }
+
+    /** Files that sat in Trash for 30 days are removed for good. */
+    private fun emptyOldTrash() {
+        val expired = files.expiredTrash(System.currentTimeMillis())
+        if (expired.isEmpty()) return
+        expired.forEach { f ->
+            fileOf(f)?.delete()
+            files.remove(f.id)
+        }
+        saveFiles()
+    }
+
+    private fun saveFiles() {
+        prefs.edit().putString(PREF_FILES, files.encode()).apply()
     }
 
     private fun goBack() {
@@ -430,6 +600,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             fullscreenView != null -> exitFullscreen()
             binding.designerScreen.isVisible -> if (homeSetup != null) hideDesigner()
             binding.previousScreen.isVisible -> hidePrevious()
+            binding.filesScreen.isVisible && filesShowTrash -> {
+                filesShowTrash = false
+                renderFiles()
+            }
+            binding.filesScreen.isVisible -> hideFiles()
             binding.browserScreen.isVisible && binding.webView.canGoBack() -> binding.webView.goBack()
             binding.browserScreen.isVisible -> showHome()
         }
@@ -439,7 +614,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val firstDesign = binding.designerScreen.isVisible && homeSetup == null
-                val onHome = binding.homeScreen.isVisible && !binding.designerScreen.isVisible && !binding.previousScreen.isVisible
+                val onHome = binding.homeScreen.isVisible && !binding.designerScreen.isVisible && !binding.previousScreen.isVisible &&
+                    !binding.filesScreen.isVisible
                 if (fullscreenView == null && (onHome || firstDesign)) {
                     // On the Arrow Os home screen, back leaves the app as usual.
                     isEnabled = false
@@ -700,6 +876,236 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         prefs.edit().putString(PREF_PREVIOUS, previous.encode()).apply()
     }
 
+    // ---------- Arrow Files ----------
+
+    private fun setupFilesScreen() {
+        binding.filesClose.setOnClickListener { goBack() }
+        binding.filesTrashToggle.setOnClickListener {
+            filesShowTrash = !filesShowTrash
+            renderFiles()
+        }
+    }
+
+    /** Shows Arrow Files on top of home or the browser. */
+    private fun showFiles() {
+        exitFullscreen()
+        hidePrevious()
+        filesShowTrash = false
+        checkUnfinishedDownloads()
+        renderFiles()
+        binding.filesScreen.isVisible = true
+        binding.filesScroll.scrollTo(0, 0)
+    }
+
+    private fun hideFiles() {
+        binding.filesScreen.isVisible = false
+        filesShowTrash = false
+    }
+
+    private fun renderFiles() {
+        val trash = filesShowTrash
+        binding.filesTitle.text = getString(if (trash) R.string.files_trash_title else R.string.files_title)
+        binding.filesTrashToggle.text = getString(if (trash) R.string.files_back_to_files else R.string.files_trash)
+        binding.filesHint.text = getString(if (trash) R.string.files_trash_hint else R.string.files_hint)
+
+        val sources = files.sources
+        if (filesSource != null && filesSource !in sources) filesSource = null
+        binding.filesKindsScroll.isVisible = !trash && files.active.isNotEmpty()
+        binding.filesSourcesScroll.isVisible = !trash && sources.size > 1
+
+        binding.filesKinds.removeAllViews()
+        addFilesChip(binding.filesKinds, getString(R.string.files_all), filesKind == null) { filesKind = null }
+        FileKind.entries.forEach { kind ->
+            addFilesChip(binding.filesKinds, kind.label, filesKind == kind) { filesKind = kind }
+        }
+        binding.filesSources.removeAllViews()
+        addFilesChip(binding.filesSources, getString(R.string.files_all_sources), filesSource == null) { filesSource = null }
+        sources.forEach { source ->
+            addFilesChip(binding.filesSources, source, filesSource == source) { filesSource = source }
+        }
+
+        val shown = if (trash) files.trash else files.filter(filesKind, filesSource)
+        binding.filesEmpty.isVisible = shown.isEmpty()
+        binding.filesEmpty.text = when {
+            trash -> getString(R.string.files_trash_empty)
+            files.active.isEmpty() -> getString(R.string.files_empty)
+            else -> getString(R.string.files_no_match)
+        }
+        val list = binding.filesList
+        list.removeAllViews()
+        val inflater = LayoutInflater.from(this)
+        val now = System.currentTimeMillis()
+        shown.forEach { f ->
+            val row = ItemArrowFileBinding.inflate(inflater, list, false)
+            row.fileIcon.text = f.kind.letter
+            row.fileIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(f.kind.colorHex))
+            row.fileName.text = f.name
+            val state = when (f.status) {
+                FileStatus.Downloading -> getString(R.string.files_still_downloading)
+                FileStatus.Failed -> getString(R.string.files_failed_short)
+                FileStatus.Ready -> "${Formatter.formatShortFileSize(this, f.size)} · " +
+                    DateUtils.getRelativeTimeSpanString(f.savedAt, now, DateUtils.MINUTE_IN_MILLIS)
+            }
+            row.fileDetails.text = "${f.source} · $state"
+            row.root.contentDescription = "${f.name}, ${row.fileDetails.text}"
+            row.root.setOnClickListener { if (trash) showFileMenu(f, row.fileMore) else openFile(f) }
+            row.root.setOnLongClickListener {
+                showFileMenu(f, row.fileMore)
+                true
+            }
+            row.fileMore.setOnClickListener { showFileMenu(f, it) }
+            list.addView(row.root)
+        }
+    }
+
+    private fun addFilesChip(parent: LinearLayout, label: String, selected: Boolean, pick: () -> Unit) {
+        val pad = (12 * resources.displayMetrics.density).toInt()
+        val chip = TextView(this).apply {
+            text = label
+            textSize = 14f
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.chip_bg)
+            if (selected) backgroundTintList = ContextCompat.getColorStateList(this@MainActivity, R.color.accent)
+            setTextColor(ContextCompat.getColor(this@MainActivity, if (selected) R.color.bg_dark else R.color.text_primary))
+            setPadding(pad + pad / 3, pad / 2, pad + pad / 3, pad / 2)
+            setOnClickListener {
+                pick()
+                renderFiles()
+            }
+        }
+        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        lp.marginEnd = pad * 2 / 3
+        parent.addView(chip, lp)
+    }
+
+    private fun showFileMenu(f: ArrowFile, anchor: View) {
+        val menu = PopupMenu(this, anchor)
+        val options = when {
+            f.inTrash -> listOf(R.string.files_restore, R.string.files_delete_forever)
+            f.status == FileStatus.Ready ->
+                listOf(R.string.files_open, R.string.files_share, R.string.files_save_to_phone, R.string.files_move_to_trash)
+            else -> listOf(R.string.files_delete_forever)
+        }
+        options.forEachIndexed { i, res -> menu.menu.add(0, res, i, res) }
+        menu.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                R.string.files_open -> openFile(f)
+                R.string.files_share -> shareFile(f)
+                R.string.files_save_to_phone -> saveToPhone(f)
+                R.string.files_move_to_trash -> {
+                    files.moveToTrash(f.id, System.currentTimeMillis())
+                    saveFiles()
+                    toast(getString(R.string.files_trashed))
+                }
+                R.string.files_restore -> {
+                    files.restore(f.id)
+                    saveFiles()
+                    toast(getString(R.string.files_restored))
+                }
+                R.string.files_delete_forever -> {
+                    if (f.status == FileStatus.Downloading) {
+                        try {
+                            getSystemService(DownloadManager::class.java).remove(f.downloadId)
+                        } catch (e: Exception) {
+                            // already gone
+                        }
+                    }
+                    fileOf(f)?.delete()
+                    files.remove(f.id)
+                    saveFiles()
+                    toast(getString(R.string.files_deleted))
+                }
+            }
+            renderFiles()
+            true
+        }
+        menu.show()
+    }
+
+    /** A content link other apps may read, or null (with a message) when the file is gone. */
+    private fun shareableUri(f: ArrowFile): Uri? {
+        if (f.status != FileStatus.Ready) {
+            toast(getString(if (f.status == FileStatus.Downloading) R.string.files_still_downloading else R.string.files_failed_short))
+            return null
+        }
+        val file = fileOf(f)
+        if (file == null || !file.exists()) {
+            toast(getString(R.string.files_missing))
+            return null
+        }
+        return FileProvider.getUriForFile(this, "$packageName.files", file)
+    }
+
+    private fun openFile(f: ArrowFile) {
+        val uri = shareableUri(f) ?: return
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, f.mimeType)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            toast(getString(R.string.files_no_app))
+        }
+    }
+
+    private fun shareFile(f: ArrowFile) {
+        val uri = shareableUri(f) ?: return
+        val intent = Intent(Intent.ACTION_SEND)
+            .setType(f.mimeType)
+            .putExtra(Intent.EXTRA_STREAM, uri)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivity(Intent.createChooser(intent, getString(R.string.files_share)))
+    }
+
+    /** Copies the file to the phone's own Downloads/ArrowOs folder, where every app can see it. */
+    private fun saveToPhone(f: ArrowFile) {
+        val src = fileOf(f)
+        if (src == null || !src.exists()) {
+            toast(getString(R.string.files_missing))
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingSaveToPhone = f
+            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            return
+        }
+        Thread {
+            val ok = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, f.name)
+                        put(MediaStore.Downloads.MIME_TYPE, f.mimeType)
+                        put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/ArrowOs")
+                        put(MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        ?: throw IllegalStateException("no place to save")
+                    contentResolver.openOutputStream(uri)?.use { out -> src.inputStream().use { it.copyTo(out) } }
+                    values.clear()
+                    values.put(MediaStore.Downloads.IS_PENDING, 0)
+                    contentResolver.update(uri, values, null, null)
+                } else {
+                    @Suppress("DEPRECATION")
+                    val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "ArrowOs")
+                    dir.mkdirs()
+                    var target = File(dir, f.name)
+                    var n = 2
+                    while (target.exists()) {
+                        target = File(dir, "${f.name.substringBeforeLast('.')} ($n)" +
+                            (if ('.' in f.name) ".${f.name.substringAfterLast('.')}" else ""))
+                        n++
+                    }
+                    src.copyTo(target)
+                }
+                true
+            } catch (e: Exception) {
+                false
+            }
+            runOnUiThread { toast(getString(if (ok) R.string.files_saved_to_phone else R.string.files_save_failed)) }
+        }.start()
+    }
+
     // ---------- Voice ----------
 
     private fun setupVoiceBar() {
@@ -806,7 +1212,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         binding.voiceStatus.text = getString(R.string.voice_unavailable)
     }
 
-    private val inApp: Boolean get() = binding.browserScreen.isVisible && !binding.previousScreen.isVisible
+    private val inApp: Boolean
+        get() = binding.browserScreen.isVisible && !binding.previousScreen.isVisible && !binding.filesScreen.isVisible
 
     private fun perform(command: Command) {
         // On the Previous screen, scrolling moves the list instead of a web page.
@@ -940,6 +1347,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 showPrevious()
                 askToClearPrevious()
             }
+            Command.ShowFiles -> {
+                confirm(getString(R.string.say_files))
+                showFiles()
+            }
             Command.Help -> showHelp()
             Command.StopListening -> {
                 confirm(getString(R.string.say_stop))
@@ -1025,6 +1436,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private companion object {
         const val PREF_PREVIOUS = "previous_tabs"
         const val PREF_HOME_SETUP = "home_setup"
+        const val PREF_FILES = "arrow_files"
+        const val FILES_COLOR = "#0091B3"
         val previousScrollCommands = setOf(
             Command.ScrollDown, Command.ScrollUp, Command.ScrollTop, Command.ScrollBottom, Command.NextItem, Command.PreviousItem,
         )

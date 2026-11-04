@@ -38,6 +38,23 @@ The catalog covers 24 business categories and about 120 apps and websites. It li
 in `AutoDesigner.kt`; if nothing matches what was typed, Arrow Os offers general
 business tools and a web search for more.
 
+## Arrow Files
+
+**Arrow Files** is the file manager of Arrow Os. It is always the first app on the home
+screen (and the folder button at the top of every app), whatever business you picked.
+
+- Every file you download from a website inside Arrow Os lands in Arrow Files, in your
+  own folder: `ArrowFiles/<user>/websites/<site>/<file>` inside Arrow Os's storage.
+  Until email sign-in arrives, the user is `guest`.
+- Filter by type (Videos, Images, Documents, Audio, Other) or by the site it came from.
+- Tap a file to open it. The ⋮ button (or a long press) gives **Open**, **Share**,
+  **Save to phone** (copies it to the phone's `Downloads/ArrowOs` folder) and
+  **Move to Trash**. Trash keeps files for 30 days.
+- Say "tap open Arrow Files", "tap my files" or "tap downloads".
+
+Coming next: email sign-in and a cloud copy of every file (Firebase), uploaded on
+Wi-Fi or mobile data, so files follow you to a new phone.
+
 ## Install the APK (from your phone)
 
 **Easiest: the "latest" release**

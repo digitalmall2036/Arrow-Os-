@@ -51,6 +51,8 @@ sealed class Command {
     data object ShowPrevious : Command()
     /** Empty the "Previous" list (asks first). */
     data object ClearPrevious : Command()
+    /** Open Arrow Files: every file downloaded in Arrow Os. */
+    data object ShowFiles : Command()
     data object Help : Command()
     data object StopListening : Command()
 
@@ -268,6 +270,10 @@ object CommandParser {
         "recent tabs", "recent pages", "old tabs" -> Command.ShowPrevious
         "clear previous", "clear previous tabs", "delete previous", "delete previous tabs", "clear history",
         "delete history", "clear my history", "clear tab history" -> Command.ClearPrevious
+        "files", "file", "arrow files", "arrow file", "my files", "open files", "open arrow files",
+        "open my files", "show files", "show my files", "show arrow files", "go to files", "go to arrow files",
+        "downloads", "my downloads", "open downloads", "show downloads", "show my downloads", "downloaded files",
+        "my downloaded files", "file manager", "open file manager" -> Command.ShowFiles
         "play", "play it", "play video", "play the video", "play this", "play that", "play this video",
         "resume", "continue", "unpause", "start video", "start it" -> Command.Play
         "pause", "pause it", "pause video", "pause the video", "pause this", "stop", "stop it", "stop video",
