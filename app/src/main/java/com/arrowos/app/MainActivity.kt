@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.text.format.DateUtils
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -40,6 +41,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.arrowos.app.databinding.ActivityMainBinding
 import com.arrowos.app.databinding.ItemAppTileBinding
+import com.arrowos.app.databinding.ItemPreviousTabBinding
 import java.util.Locale
 
 class MainActivity : AppCompatActivity(), VoiceController.Listener {
@@ -72,6 +74,13 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private var userMuted = false
 
     private lateinit var web: WebActions
+
+    /** "Previous": every tab ever opened in Arrow Os, saved across launches. */
+    private lateinit var previous: TabHistory
+    private val prefs by lazy { getSharedPreferences("arrow_os", MODE_PRIVATE) }
+
+    /** The address the error page is standing in for; it is not a real visit. */
+    private var errorPageUrl: String? = null
     private val handler = Handler(Looper.getMainLooper())
 
     private var fullscreenView: View? = null
@@ -90,7 +99,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
         voice = VoiceController(this, this)
         web = WebActions(binding.webView)
+        previous = TabHistory.decode(prefs.getString(PREF_PREVIOUS, null))
         setupHomeScreen()
+        setupPreviousScreen()
         setupBrowser()
         setupVoiceBar()
         setupBackHandling()
@@ -133,9 +144,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             tile.root.setOnClickListener { openApp(app) }
             binding.appGrid.addView(tile.root)
         }
+        binding.homePrevious.setOnClickListener { showPrevious() }
     }
 
     private fun showHome() {
+        hidePrevious()
         currentApp = null
         binding.homeScreen.isVisible = true
         binding.browserScreen.isVisible = false
@@ -185,6 +198,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
             override fun onPageFinished(view: WebView, url: String?) {
                 binding.pageProgress.isVisible = false
+                if (url != errorPageUrl && previous.updateTitle(url, view.title)) savePrevious()
                 // On a website (not one of the five apps) show the page's name.
                 if (currentApp == null && binding.browserScreen.isVisible) {
                     binding.browserTitle.text = view.title?.takeIf { it.isNotBlank() && !it.startsWith("http") }
@@ -197,6 +211,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                     resetHistoryOnNextPage = false
                     view.clearHistory()
                 }
+                // Every page (including in-page moves like a new YouTube video) goes into Previous.
+                // The title is filled in by onReceivedTitle; view.title can still be the old page's here.
+                if (url != errorPageUrl && previous.record(url, null, System.currentTimeMillis())) savePrevious()
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -206,6 +223,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
 
         binding.webView.webChromeClient = object : WebChromeClient() {
+            override fun onReceivedTitle(view: WebView, title: String?) {
+                val url = view.url
+                if (url != errorPageUrl && previous.updateTitle(url, title)) savePrevious()
+            }
+
             override fun onProgressChanged(view: WebView, newProgress: Int) {
                 binding.pageProgress.progress = newProgress
                 binding.pageProgress.isVisible = newProgress < 100
@@ -247,6 +269,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         binding.browserBack.setOnClickListener { goBack() }
         binding.browserHome.setOnClickListener { showHome() }
         binding.browserReload.setOnClickListener { binding.webView.reload() }
+        binding.browserPrevious.setOnClickListener { showPrevious() }
     }
 
     /** Keeps every link inside Arrow Os. Returns true when the WebView should NOT load [url] itself. */
@@ -292,6 +315,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     }
 
     private fun load(url: String, freshHistory: Boolean) {
+        hidePrevious()
+        errorPageUrl = null
         binding.homeScreen.isVisible = false
         binding.browserScreen.isVisible = true
         pendingAlternatives.clear()
@@ -339,6 +364,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             <p><button onclick="location.href=decodeURIComponent('${Uri.encode(url)}')">${Html.escapeHtml(getString(R.string.retry))}</button></p>
             <small>$safeUrl<br>${Html.escapeHtml(description)}</small></body></html>
         """.trimIndent()
+        errorPageUrl = url
         view.loadDataWithBaseURL(null, html, "text/html", "utf-8", url)
     }
 
@@ -367,6 +393,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private fun goBack() {
         when {
             fullscreenView != null -> exitFullscreen()
+            binding.previousScreen.isVisible -> hidePrevious()
             binding.browserScreen.isVisible && binding.webView.canGoBack() -> binding.webView.goBack()
             binding.browserScreen.isVisible -> showHome()
         }
@@ -375,7 +402,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private fun setupBackHandling() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (binding.homeScreen.isVisible && fullscreenView == null) {
+                if (binding.homeScreen.isVisible && fullscreenView == null && !binding.previousScreen.isVisible) {
                     // On the Arrow Os home screen, back leaves the app as usual.
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -385,6 +412,88 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 }
             }
         })
+    }
+
+    // ---------- Previous (tab history) ----------
+
+    private fun setupPreviousScreen() {
+        binding.previousClose.setOnClickListener { hidePrevious() }
+        binding.previousClear.setOnClickListener { askToClearPrevious() }
+    }
+
+    /** Shows every tab ever opened in Arrow Os, newest first. */
+    private fun showPrevious() {
+        exitFullscreen()
+        renderPrevious()
+        binding.previousScreen.isVisible = true
+        binding.previousScroll.scrollTo(0, 0)
+    }
+
+    private fun scrollPrevious(command: Command) {
+        val scroll = binding.previousScroll
+        val page = (scroll.height * 0.8).toInt()
+        when (command) {
+            Command.ScrollTop -> scroll.smoothScrollTo(0, 0)
+            Command.ScrollBottom -> scroll.fullScroll(View.FOCUS_DOWN)
+            Command.ScrollUp, Command.PreviousItem -> scroll.smoothScrollBy(0, -page)
+            else -> scroll.smoothScrollBy(0, page)
+        }
+    }
+
+    private fun hidePrevious() {
+        binding.previousScreen.isVisible = false
+    }
+
+    private fun renderPrevious() {
+        val list = binding.previousList
+        list.removeAllViews()
+        val tabs = previous.all
+        binding.previousEmpty.isVisible = tabs.isEmpty()
+        binding.previousHint.isVisible = tabs.isNotEmpty()
+        binding.previousClear.isVisible = tabs.isNotEmpty()
+        val inflater = LayoutInflater.from(this)
+        val now = System.currentTimeMillis()
+        tabs.forEachIndexed { i, tab ->
+            val row = ItemPreviousTabBinding.inflate(inflater, list, false)
+            val app = ArrowApp.fromUrl(tab.url)
+            row.tabNumber.text = (i + 1).toString()
+            row.tabNumber.backgroundTintList = ColorStateList.valueOf(
+                if (app != null) Color.parseColor(app.colorHex) else ContextCompat.getColor(this, R.color.bg_panel),
+            )
+            row.tabTitle.text = tab.title.ifBlank { tab.host }
+            val ago = DateUtils.getRelativeTimeSpanString(tab.visitedAt, now, DateUtils.MINUTE_IN_MILLIS)
+            row.tabDetails.text = "${app?.label ?: tab.host} · $ago"
+            row.root.contentDescription = "${i + 1}. ${row.tabTitle.text}"
+            row.root.setOnClickListener { openPreviousTab(tab) }
+            list.addView(row.root)
+        }
+    }
+
+    /** Takes the user straight back to [tab], inside its app when it belongs to one. */
+    private fun openPreviousTab(tab: PreviousTab) {
+        val name = tab.title.ifBlank { tab.host }
+        confirm(getString(R.string.say_previous_opening, name))
+        val app = ArrowApp.fromUrl(tab.url)
+        if (app != null) openApp(app, tab.url) else openWebsite(tab.url, name)
+    }
+
+    private fun askToClearPrevious() {
+        if (previous.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.previous_clear_title)
+            .setMessage(R.string.previous_clear_message)
+            .setPositiveButton(R.string.previous_clear) { _, _ ->
+                previous.clear()
+                savePrevious()
+                renderPrevious()
+                toast(getString(R.string.say_previous_cleared))
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun savePrevious() {
+        prefs.edit().putString(PREF_PREVIOUS, previous.encode()).apply()
     }
 
     // ---------- Voice ----------
@@ -491,9 +600,14 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         binding.voiceStatus.text = getString(R.string.voice_unavailable)
     }
 
-    private val inApp: Boolean get() = binding.browserScreen.isVisible
+    private val inApp: Boolean get() = binding.browserScreen.isVisible && !binding.previousScreen.isVisible
 
     private fun perform(command: Command) {
+        // On the Previous screen, scrolling moves the list instead of a web page.
+        if (binding.previousScreen.isVisible && command in previousScrollCommands) {
+            scrollPrevious(command)
+            return
+        }
         when (command) {
             is Command.Open -> {
                 confirm(getString(R.string.say_opening, command.app.label))
@@ -556,6 +670,12 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             Command.Unmute -> inPage { web.unmute { ok -> toast(if (ok) "Sound on" else "No video on this page") } }
 
             is Command.Tap -> {
+                if (binding.previousScreen.isVisible) {
+                    // "tap Tom and Jerry" on the Previous screen opens the tab with that name.
+                    val tab = previous.find(command.spoken)
+                    if (tab != null) openPreviousTab(tab) else toast("No tab called \"${command.spoken}\" in Previous")
+                    return
+                }
                 if (!inApp) {
                     toast("Open an app or website first, for example \"tap open TikTok\"")
                     return
@@ -571,7 +691,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                     }
                 }
             }
-            is Command.TapNth -> inPage {
+            // On the Previous screen, "tap 2" / "tap the second one" opens that tab.
+            is Command.TapNth -> if (binding.previousScreen.isVisible) {
+                val tab = previous.nth(command.n)
+                if (tab != null) openPreviousTab(tab) else toast(getString(R.string.previous_not_found, command.n))
+            } else inPage {
                 web.tapNth(command.n) { ok ->
                     if (ok) confirm("Opening number ${command.n}") else toast("Couldn't find item ${command.n} on this page")
                 }
@@ -587,6 +711,14 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             }
             Command.PressEnter -> inPage { web.pressEnter() }
 
+            Command.ShowPrevious -> {
+                confirm(getString(R.string.say_previous))
+                showPrevious()
+            }
+            Command.ClearPrevious -> {
+                showPrevious()
+                askToClearPrevious()
+            }
             Command.Help -> showHelp()
             Command.StopListening -> {
                 confirm(getString(R.string.say_stop))
@@ -620,6 +752,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
                 TAP does anything on screen:
                 tap open YouTube · tap home · tap back
+                tap previous (every tab you opened; then tap 2 to go back to one)
                 tap like this video · tap comment · tap share · tap follow · tap subscribe
                 tap play the second video on this page
                 tap scroll to the second video and play it
@@ -665,6 +798,13 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             override fun onError(utteranceId: String?) = resumeMic()
             override fun onError(utteranceId: String?, errorCode: Int) = resumeMic()
         })
+    }
+
+    private companion object {
+        const val PREF_PREVIOUS = "previous_tabs"
+        val previousScrollCommands = setOf(
+            Command.ScrollDown, Command.ScrollUp, Command.ScrollTop, Command.ScrollBottom, Command.NextItem, Command.PreviousItem,
+        )
     }
 
     private fun resumeMic() = runOnUiThread {

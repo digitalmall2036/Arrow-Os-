@@ -60,7 +60,21 @@ enum class ArrowApp(
         }
     }
 
+    /** "youtube.com", "facebook.com": the site this app lives on, without "www." or "m.". */
+    val domain: String
+        get() = java.net.URI(homeUrl).host.removePrefix("www.").removePrefix("m.")
+
     companion object {
+        /** The app a web address belongs to ("https://m.youtube.com/watch?v=1" is YouTube), or null. */
+        fun fromUrl(url: String): ArrowApp? {
+            val host = try {
+                java.net.URI(url.trim()).host?.lowercase()
+            } catch (e: Exception) {
+                null
+            } ?: return null
+            return entries.firstOrNull { host == it.domain || host.endsWith("." + it.domain) }
+        }
+
         /** Finds the app the user named, or null. Longest alias wins ("tik tok" before "tik"). */
         fun fromSpoken(text: String): ArrowApp? {
             val normalized = CommandParser.normalize(text)

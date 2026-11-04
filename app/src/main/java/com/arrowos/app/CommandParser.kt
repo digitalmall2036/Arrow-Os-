@@ -47,6 +47,10 @@ sealed class Command {
     data object PressEnter : Command()
 
     // Arrow Os itself
+    /** Show "Previous": every tab/page ever opened in Arrow Os. */
+    data object ShowPrevious : Command()
+    /** Empty the "Previous" list (asks first). */
+    data object ClearPrevious : Command()
     data object Help : Command()
     data object StopListening : Command()
 
@@ -256,6 +260,14 @@ object CommandParser {
         "reload", "refresh", "reload page", "refresh page", "reload it", "refresh it" -> Command.Reload
         "stop listening", "mic off", "turn off mic", "turn off the mic", "voice off" -> Command.StopListening
         "help", "commands", "show commands" -> Command.Help
+        // "tap previous" opens the Previous list. "tap previous video" still moves the feed back.
+        "previous", "previous tab", "previous tabs", "previous taps", "previous pages", "previous sites",
+        "previous websites", "open previous", "show previous", "show previous tabs", "open previous tabs",
+        "show me previous", "show my previous tabs", "my previous tabs", "go to previous tabs",
+        "history", "tab history", "my history", "show history", "open history", "browsing history",
+        "recent tabs", "recent pages", "old tabs" -> Command.ShowPrevious
+        "clear previous", "clear previous tabs", "delete previous", "delete previous tabs", "clear history",
+        "delete history", "clear my history", "clear tab history" -> Command.ClearPrevious
         "play", "play it", "play video", "play the video", "play this", "play that", "play this video",
         "resume", "continue", "unpause", "start video", "start it" -> Command.Play
         "pause", "pause it", "pause video", "pause the video", "pause this", "stop", "stop it", "stop video",

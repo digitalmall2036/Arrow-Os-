@@ -55,6 +55,7 @@ anything else (like just saying "Jeff Bezos") is ignored and does nothing.
 | --- | --- |
 | tap open YouTube / tap TikTok | Opens that app |
 | tap home / tap back / tap refresh | Navigation |
+| tap previous | Opens **Previous**: every tab ever opened in Arrow Os |
 | tap like this video / tap the like icon | Taps the like button |
 | tap comment / tap share / tap follow / tap subscribe / tap save / tap skip ad | Taps that button |
 | tap play the second video on this page | Opens and plays the 2nd video |
@@ -72,8 +73,16 @@ every button, link and icon, with its text, accessibility label, tooltip, icon n
 and internal name. It picks the best match for your words, also trying other names
 sites use (for example "next" also matches "›", "Continue" or "Go to next video"),
 and allows one wrong letter. It outlines the chosen spot in blue for a moment, then
-taps it. `tap next` and `tap previous` press the page's own Next/Previous button;
-on feeds without one (TikTok, Shorts) they move to the next video.
+taps it. `tap next` and `tap previous video` press the page's own Next/Previous
+button; on feeds without one (TikTok, Shorts) they move to the next or previous video.
+
+**Previous (tab history):** Arrow Os remembers every page you open, in every app and
+website, even after you close it. Open the list with `tap previous` (or `tap history`),
+the **Previous** button on the home screen, or the clock icon at the top of any page.
+The newest tab is at the top. Tap any tab, or say `tap 2` / `tap the second one` /
+`tap Tom and Jerry`, and Arrow Os goes straight back to that page, inside its app.
+`tap back` closes the list, and `tap clear previous` (or the Clear button) empties it
+after asking first.
 
 Join commands with "then": `tap open TikTok then search cats`.
 
