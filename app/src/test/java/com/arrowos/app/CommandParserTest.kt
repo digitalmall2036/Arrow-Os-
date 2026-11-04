@@ -165,4 +165,11 @@ class CommandParserTest {
         assertEquals(Command.Back, parse("tap previous page"))
         assertEquals(listOf(Command.Open(ArrowApp.YOUTUBE), Command.ShowPrevious), all("tap open YouTube then tap previous"))
     }
+
+    @Test fun arrowFilesOpensByVoice() {
+        assertEquals(Command.ShowFiles, parse("tap open Arrow Files"))
+        assertEquals(Command.ShowFiles, parse("tap my files"))
+        assertEquals(Command.ShowFiles, parse("tap downloads"))
+        assertEquals(Command.ShowFiles, parse("tap show my downloads"))
+    }
 }

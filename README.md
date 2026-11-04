@@ -38,6 +38,45 @@ The catalog covers 24 business categories and about 120 apps and websites. It li
 in `AutoDesigner.kt`; if nothing matches what was typed, Arrow Os offers general
 business tools and a web search for more.
 
+## Arrow Files
+
+**Arrow Files** is the file manager of Arrow Os. It is always the first app on the home
+screen (and the folder button at the top of every app), whatever business you picked.
+
+- Every file you download from a website inside Arrow Os lands in Arrow Files, in your
+  own folder: `ArrowFiles/<user>/websites/<site>/<file>` inside Arrow Os's storage.
+  Until email sign-in arrives, the user is `guest`.
+- Filter by type (Videos, Images, Documents, Audio, Other) or by the site it came from.
+- Tap a file to open it. The ⋮ button (or a long press) gives **Open**, **Share**,
+  **Save to phone** (copies it to the phone's `Downloads/ArrowOs` folder) and
+  **Move to Trash**. Trash keeps files for 30 days.
+- Say "tap open Arrow Files", "tap my files" or "tap downloads".
+
+## Accounts (email sign-in)
+
+Everyone signs in with an email and password the first time Arrow Os opens
+(Firebase Authentication, project `arrow--os`). Each account has its own Arrow Files
+folder (`ArrowFiles/<account id>/...`) and its own home screen. The home screen and the
+list of files are kept in the account in Firestore, so they follow you to a new phone.
+Files saved before sign-in move into the first account that signs in on that phone.
+Tap your email at the bottom of the home screen to sign out.
+
+The Firestore security rules are in [`firestore.rules`](firestore.rules): paste them into
+Firebase → Firestore Database → Rules and tap **Publish**, so each user can only read
+their own data.
+
+## Cloud copy of Arrow Files (Supabase)
+
+Every file in Arrow Files is also copied to the account's private folder in Supabase
+Storage (free plan, bucket `arrow-files`, same path as on the phone). Uploads run on
+Wi-Fi or mobile data, one file at a time, and pick up again after the phone was offline.
+Each file shows **in cloud**, **waiting to upload**, or **phone only** (over the free
+plan's 50 MB limit). On a new phone, after signing in, the files from the account are
+listed straight away and downloaded when opened.
+
+One-time setup in Supabase: the Firebase third-party sign-in must be on, and the rules in
+[`supabase-storage.sql`](supabase-storage.sql) must be run once in the SQL Editor.
+
 ## Install the APK (from your phone)
 
 **Easiest: the "latest" release**

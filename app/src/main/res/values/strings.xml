@@ -64,4 +64,59 @@
     <string name="designer_empty_input">Type your business or profession first</string>
     <string name="home_business">Your %1$s space</string>
     <string name="home_empty">No apps yet. Tap \"Change my business or apps\" to pick some.</string>
+
+    <!-- Arrow Files: every file downloaded in Arrow Os -->
+    <string name="files_title">Arrow Files</string>
+    <string name="files_trash">Trash</string>
+    <string name="files_back_to_files">Files</string>
+    <string name="files_trash_title">Trash</string>
+    <string name="files_hint">Every file you download in Arrow Os, newest first. Kept on this phone and copied to your account.</string>
+    <string name="files_trash_hint">Deleted files stay here for 30 days, then they are removed for good.</string>
+    <string name="files_empty">No files yet. Anything you download from a website inside Arrow Os lands here.</string>
+    <string name="files_trash_empty">Trash is empty.</string>
+    <string name="files_no_match">No files here. Try another filter.</string>
+    <string name="files_all">All</string>
+    <string name="files_all_sources">All sites</string>
+    <string name="files_more">More options</string>
+    <string name="files_open">Open</string>
+    <string name="files_share">Share</string>
+    <string name="files_save_to_phone">Save to phone</string>
+    <string name="files_move_to_trash">Move to Trash</string>
+    <string name="files_restore">Restore</string>
+    <string name="files_delete_forever">Delete forever</string>
+    <string name="files_downloading">Downloading %1$s. It will be in Arrow Files.</string>
+    <string name="files_saved">Saved %1$s to Arrow Files</string>
+    <string name="files_failed">Couldn\'t download %1$s</string>
+    <string name="files_still_downloading">Still downloading</string>
+    <string name="files_failed_short">Download failed</string>
+    <string name="files_missing">This file is no longer on the phone</string>
+    <string name="files_no_app">No app on this phone can open this file</string>
+    <string name="files_saved_to_phone">Saved to Downloads/ArrowOs</string>
+    <string name="files_save_failed">Couldn\'t save to the phone</string>
+    <string name="files_trashed">Moved to Trash</string>
+    <string name="files_restored">Restored</string>
+    <string name="files_deleted">Deleted</string>
+    <string name="files_cant_download">This file can\'t be downloaded here</string>
+    <string name="say_files">Arrow Files</string>
+    <string name="files_in_cloud">in cloud</string>
+    <string name="files_cloud_only">in cloud, tap to get</string>
+    <string name="files_waiting_upload">waiting to upload</string>
+    <string name="files_phone_only">phone only, over 50 MB</string>
+    <string name="files_fetching">Getting %1$s from your account…</string>
+    <string name="files_fetch_failed">Couldn\'t get the file. Check the internet and try again.</string>
+
+    <!-- Sign-in -->
+    <string name="signin_title">Welcome to Arrow Os</string>
+    <string name="signin_subtitle">Sign in with your email. Your apps and Arrow Files belong to your account.</string>
+    <string name="signin_email">Email</string>
+    <string name="signin_password">Password (at least 6 characters)</string>
+    <string name="signin_button">Sign in</string>
+    <string name="signin_create">Create account</string>
+    <string name="signin_forgot">Forgot password?</string>
+    <string name="signin_reset_sent">We sent a password reset link to %1$s</string>
+    <string name="signin_welcome">Signed in as %1$s</string>
+    <string name="home_account">%1$s · Sign out</string>
+    <string name="signout_title">Sign out?</string>
+    <string name="signout_message">Your files stay safe in your account. Sign in again to see them.</string>
+    <string name="signout">Sign out</string>
 </resources>
