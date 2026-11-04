@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Arrow Os</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Home screen: Arrow Os's own apps -->
+  <section id="home" class="screen">
+    <header class="brand">
+      <img src="../assets/logo.png" alt="" class="logo">
+      <div>
+        <h1>Arrow Os</h1>
+        <p id="clock" class="muted"></p>
+      </div>
+    </header>
+    <div id="tiles" class="tiles"></div>
+    <p class="hint muted">Say or type a command that starts with <b>tap</b> or <b>search</b>,
+      for example <code>tap open YouTube</code> or <code>search cats on TikTok</code>.
+      <a href="#" id="helpLink">See all commands</a></p>
+  </section>
+
+  <!-- Browser: every app and website opens in here -->
+  <section id="browser" class="screen hidden">
+    <nav class="toolbar">
+      <button id="backBtn" class="icon-btn" title="Back (Alt+Left)" aria-label="Back">
+        <svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg></button>
+      <button id="homeBtn" class="icon-btn" title="Home (Alt+Home)" aria-label="Home">
+        <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg></button>
+      <button id="reloadBtn" class="icon-btn" title="Reload (F5)" aria-label="Reload">
+        <svg viewBox="0 0 24 24"><path d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg></button>
+      <div id="appDots" class="app-dots"></div>
+      <div id="pageTitle" class="page-title"></div>
+      <div id="loading" class="loading hidden"></div>
+    </nav>
+    <div class="web-wrap">
+      <webview id="web" partition="persist:arrow" allowpopups src="about:blank"></webview>
+      <div id="errorBox" class="error-box hidden">
+        <h2>Couldn't open this page</h2>
+        <p id="errorText"></p>
+        <button id="retryBtn" class="primary">Try again</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Command bar: voice and typing -->
+  <footer class="command-bar">
+    <button id="micBtn" class="mic" title="Mic on/off (Ctrl+M)" aria-label="Microphone">
+      <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg>
+    </button>
+    <div class="command-main">
+      <form id="commandForm" autocomplete="off">
+        <input id="commandInput" placeholder="Type a command, e.g. tap open TikTok then search cats   (Ctrl+K)" spellcheck="false">
+        <button type="submit" class="send" aria-label="Go">
+          <svg viewBox="0 0 24 24"><path d="M3 20.5v-17L22 12z"/></svg></button>
+      </form>
+      <div id="status" class="status muted">Starting…</div>
+    </div>
+  </footer>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <dialog id="help">
+    <h2>Start every command with "tap" or "search"</h2>
+    <div class="help-cols">
+      <div>
+        <h3>search finds things</h3>
+        <p><code>search Tom and Jerry</code> · <code>search cats on TikTok</code></p>
+        <p class="muted">Inside an app it searches that app; elsewhere it searches the web.</p>
+        <h3>Websites</h3>
+        <p><code>search Claude code website</code> · <code>search claude.ai</code> · <code>tap open bbc.com</code></p>
+        <h3>Chain commands with "then"</h3>
+        <p><code>tap open TikTok then search cats</code></p>
+      </div>
+      <div>
+        <h3>tap does anything on screen</h3>
+        <p><code>tap open YouTube</code> · <code>tap home</code> · <code>tap back</code> · <code>tap refresh</code></p>
+        <p><code>tap like this video</code> · <code>tap comment</code> · <code>tap share</code> · <code>tap follow</code> · <code>tap subscribe</code></p>
+        <p><code>tap play the second video</code> · <code>tap scroll to the second video and play it</code></p>
+        <p><code>tap next video</code> · <code>tap previous video</code> · <code>tap scroll down</code> · <code>tap scroll to the top</code></p>
+        <p><code>tap play</code> · <code>tap pause</code> · <code>tap mute</code> · <code>tap unmute</code> · <code>tap skip ad</code> · <code>tap full screen</code></p>
+        <p><code>tap Shorts</code> · <code>tap Following</code> (any button or link by its name)</p>
+        <p><code>tap type happy birthday and send</code> · <code>tap zoom in</code> · <code>tap stop listening</code></p>
+      </div>
+    </div>
+    <p class="muted">Anything that doesn't start with tap or search is ignored.
+      Keys: Ctrl+K command box · Ctrl+M mic · F11 full screen · Alt+Left back · Alt+Home home.</p>
+    <form method="dialog"><button class="primary">OK</button></form>
+  </dialog>
+
+  <script src="commands.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

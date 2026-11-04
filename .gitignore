@@ -9,3 +9,7 @@ build/
 .cxx
 *.apk
 *.keystore
+
+# Windows app
+node_modules/
+windows/dist/
