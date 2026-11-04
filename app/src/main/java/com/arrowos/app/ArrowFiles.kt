@@ -158,6 +158,16 @@ class ArrowFilesIndex {
         return "$base ($i)$ext"
     }
 
+    /**
+     * Hands every file from [fromUser]'s folder to [toUser], e.g. the files saved before the
+     * first sign-in. The caller moves the folder on disk the same way.
+     */
+    fun moveToUser(fromUser: String, toUser: String) {
+        val from = "$ROOT/${safeFolder(fromUser)}/"
+        val to = "$ROOT/${safeFolder(toUser)}/"
+        files.replaceAll { f -> if (f.relPath.startsWith(from)) f.copy(relPath = to + f.relPath.removePrefix(from)) else f }
+    }
+
     /** One file per line, fields separated by tabs, with \t \n \\ escaped. */
     fun encode(): String = files.joinToString("\n") { f ->
         listOf(
@@ -208,6 +218,8 @@ class ArrowFilesIndex {
             "$ROOT/${safeFolder(userId)}/websites/${safeFolder(source)}"
 
         fun pathFor(userId: String, source: String, name: String) = "${folderFor(userId, source)}/$name"
+
+        fun userFolder(userId: String) = "$ROOT/${safeFolder(userId)}"
 
         private fun safeFolder(s: String) =
             s.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('.').ifBlank { "other" }

@@ -52,8 +52,21 @@ screen (and the folder button at the top of every app), whatever business you pi
   **Move to Trash**. Trash keeps files for 30 days.
 - Say "tap open Arrow Files", "tap my files" or "tap downloads".
 
-Coming next: email sign-in and a cloud copy of every file (Firebase), uploaded on
-Wi-Fi or mobile data, so files follow you to a new phone.
+## Accounts (email sign-in)
+
+Everyone signs in with an email and password the first time Arrow Os opens
+(Firebase Authentication, project `arrow--os`). Each account has its own Arrow Files
+folder (`ArrowFiles/<account id>/...`) and its own home screen. The home screen and the
+list of files are kept in the account in Firestore, so they follow you to a new phone.
+Files saved before sign-in move into the first account that signs in on that phone.
+Tap your email at the bottom of the home screen to sign out.
+
+The Firestore security rules are in [`firestore.rules`](firestore.rules): paste them into
+Firebase → Firestore Database → Rules and tap **Publish**, so each user can only read
+their own data.
+
+Coming next: a cloud copy of the files themselves (Supabase Storage, free plan),
+uploaded on Wi-Fi or mobile data.
 
 ## Install the APK (from your phone)
 

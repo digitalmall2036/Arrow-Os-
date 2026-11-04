@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "972848899266",
+    "project_id": "arrow--os",
+    "storage_bucket": "arrow--os.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:972848899266:android:cb320462a1f7bf79c9c75b",
+        "android_client_info": {
+          "package_name": "com.arrowos.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBgR1XFg8530aWANN85PLyrV8hEaWLcd84"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

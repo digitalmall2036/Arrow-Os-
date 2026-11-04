@@ -100,8 +100,14 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     /** Arrow Files: every file downloaded in Arrow Os, saved across launches. */
     private lateinit var files: ArrowFilesIndex
 
-    /** Whose folder downloads go to. Becomes the signed-in account's id once email sign-in exists. */
-    private val filesUser = ArrowFilesIndex.LOCAL_USER
+    /** The signed-in Arrow Os account (Firebase email sign-in). */
+    private val cloud by lazy { CloudAccount() }
+
+    /** The signed-in user's id, or null on the sign-in screen. */
+    private var accountUid: String? = null
+
+    /** Whose folder downloads go to: the signed-in account's id. */
+    private var filesUser = ArrowFilesIndex.LOCAL_USER
 
     /** Arrow Files screen state: the type and site filters, and whether Trash is showing. */
     private var filesKind: FileKind? = null
@@ -153,13 +159,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         voice = VoiceController(this, this)
         web = WebActions(binding.webView)
         previous = TabHistory.decode(prefs.getString(PREF_PREVIOUS, null))
-        homeSetup = HomeSetup.decode(prefs.getString(PREF_HOME_SETUP, null))
-        files = ArrowFilesIndex.decode(prefs.getString(PREF_FILES, null))
+        files = ArrowFilesIndex() // filled in once the user is signed in
         ContextCompat.registerReceiver(
             this, downloadDone, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_EXPORTED,
         )
-        emptyOldTrash()
-        checkUnfinishedDownloads()
+        setupSignIn()
         setupHomeScreen()
         setupFilesScreen()
         setupDesigner()
@@ -169,13 +173,14 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         setupBackHandling()
         setupTts()
 
-        showHome()
+        val uid = cloud.uid
+        if (uid != null) beginSession(uid) else showSignIn()
     }
 
     override fun onResume() {
         super.onResume()
         binding.webView.onResume()
-        if (!userMuted) ensureMicPermissionThenListen(userAsked = false)
+        if (!userMuted && accountUid != null) ensureMicPermissionThenListen(userAsked = false)
     }
 
     override fun onPause() {
@@ -199,6 +204,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private fun setupHomeScreen() {
         binding.homePrevious.setOnClickListener { showPrevious() }
         binding.homeChangeBusiness.setOnClickListener { showDesigner() }
+        binding.homeAccount.setOnClickListener { askToSignOut() }
         renderHomeApps()
     }
 
@@ -493,14 +499,16 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 setDestinationInExternalFilesDir(this@MainActivity, null, relPath)
             }
             val downloadId = getSystemService(DownloadManager::class.java).enqueue(request)
+            var added = ""
             files.add(
                 ArrowFile(
                     id = UUID.randomUUID().toString(), name = name, source = source, kind = FileKind.of(name, mime),
                     mimeType = mime, size = 0, savedAt = System.currentTimeMillis(), originUrl = pageUrl,
                     relPath = relPath, status = FileStatus.Downloading, downloadId = downloadId,
-                ),
+                ).also { added = it.id },
             )
             saveFiles()
+            syncFile(added)
             toast(getString(R.string.files_downloading, name))
         } catch (e: Exception) {
             toast("Download failed: ${e.message}")
@@ -518,14 +526,16 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             val (name, relPath) = newFilePlace(source, if (ext != null) "download.$ext" else "download") ?: return
             val target = File(getExternalFilesDir(null), relPath)
             target.writeBytes(bytes)
+            var added = ""
             files.add(
                 ArrowFile(
                     id = UUID.randomUUID().toString(), name = name, source = source, kind = FileKind.of(name, mime),
                     mimeType = mime, size = target.length(), savedAt = System.currentTimeMillis(), originUrl = pageUrl,
                     relPath = relPath, status = FileStatus.Ready,
-                ),
+                ).also { added = it.id },
             )
             saveFiles()
+            syncFile(added)
             toast(getString(R.string.files_saved, name))
         } catch (e: Exception) {
             toast(getString(R.string.files_failed, "file"))
@@ -571,6 +581,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             else it.copy(status = FileStatus.Failed, downloadId = -1)
         }
         saveFiles()
+        syncFile(f.id)
         if (announce) toast(getString(if (ready) R.string.files_saved else R.string.files_failed, f.name))
         if (binding.filesScreen.isVisible) renderFiles()
     }
@@ -587,13 +598,27 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         expired.forEach { f ->
             fileOf(f)?.delete()
             files.remove(f.id)
+            syncFile(f.id)
         }
         saveFiles()
     }
 
     private fun saveFiles() {
-        prefs.edit().putString(PREF_FILES, files.encode()).apply()
+        prefs.edit().putString(filesPrefKey(), files.encode()).apply()
     }
+
+    /** Sends one file's record (or its removal) to the user's account in the cloud. */
+    private fun syncFile(id: String) {
+        val uid = accountUid ?: return
+        val f = files.get(id)
+        if (f != null) cloud.saveFile(uid, f) else cloud.deleteFile(uid, id)
+    }
+
+    private fun filesPrefKey() =
+        if (filesUser == ArrowFilesIndex.LOCAL_USER) PREF_FILES else "${PREF_FILES}_$filesUser"
+
+    private fun homeSetupPrefKey() =
+        if (accountUid == null) PREF_HOME_SETUP else "${PREF_HOME_SETUP}_$accountUid"
 
     private fun goBack() {
         when {
@@ -613,7 +638,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private fun setupBackHandling() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                val firstDesign = binding.designerScreen.isVisible && homeSetup == null
+                val firstDesign = (binding.designerScreen.isVisible && homeSetup == null) || binding.signInScreen.isVisible
                 val onHome = binding.homeScreen.isVisible && !binding.designerScreen.isVisible && !binding.previousScreen.isVisible &&
                     !binding.filesScreen.isVisible
                 if (fullscreenView == null && (onHome || firstDesign)) {
@@ -783,7 +808,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         val category = designerQuery.replaceFirstChar { it.titlecase(Locale.getDefault()) }
         val setup = HomeSetup(category, ids)
         homeSetup = setup
-        prefs.edit().putString(PREF_HOME_SETUP, setup.encode()).apply()
+        prefs.edit().putString(homeSetupPrefKey(), setup.encode()).apply()
+        accountUid?.let { cloud.saveHomeSetup(it, setup.encode()) }
         renderHomeApps()
         hideDesigner()
         if (!binding.homeScreen.isVisible) showHome()
@@ -874,6 +900,164 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private fun savePrevious() {
         prefs.edit().putString(PREF_PREVIOUS, previous.encode()).apply()
+    }
+
+    // ---------- Sign-in ----------
+
+    private fun setupSignIn() {
+        binding.signInButton.setOnClickListener { submitSignIn(create = false) }
+        binding.signInCreate.setOnClickListener { submitSignIn(create = true) }
+        binding.signInPassword.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                submitSignIn(create = false)
+                true
+            } else {
+                false
+            }
+        }
+        binding.signInForgot.setOnClickListener {
+            val email = binding.signInEmail.text.toString()
+            AccountRules.emailProblem(email)?.let {
+                showSignInError(it)
+                return@setOnClickListener
+            }
+            setSignInBusy(true)
+            cloud.sendPasswordReset(email) { error ->
+                setSignInBusy(false)
+                if (error != null) showSignInError(error)
+                else toast(getString(R.string.signin_reset_sent, AccountRules.cleanEmail(email)))
+            }
+        }
+    }
+
+    private fun showSignIn() {
+        hidePrevious()
+        hideFiles()
+        binding.designerScreen.isVisible = false
+        binding.signInError.isVisible = false
+        binding.signInScreen.isVisible = true
+        binding.commandBar.isVisible = false
+        voice.stop()
+    }
+
+    private fun submitSignIn(create: Boolean) {
+        val email = binding.signInEmail.text.toString()
+        val password = binding.signInPassword.text.toString()
+        val problem = AccountRules.emailProblem(email) ?: AccountRules.passwordProblem(password)
+        if (problem != null) {
+            showSignInError(problem)
+            return
+        }
+        setSignInBusy(true)
+        val done: (String?) -> Unit = { error ->
+            setSignInBusy(false)
+            val uid = cloud.uid
+            if (error != null || uid == null) {
+                showSignInError(error ?: "Something went wrong. Try again.")
+            } else {
+                hideKeyboard(binding.signInPassword)
+                binding.signInPassword.text.clear()
+                toast(getString(R.string.signin_welcome, cloud.email.orEmpty()))
+                beginSession(uid)
+            }
+        }
+        if (create) cloud.createAccount(email, password, done) else cloud.signIn(email, password, done)
+    }
+
+    private fun setSignInBusy(busy: Boolean) {
+        binding.signInProgress.isVisible = busy
+        binding.signInButton.isEnabled = !busy
+        binding.signInCreate.isEnabled = !busy
+        binding.signInForgot.isEnabled = !busy
+        if (busy) binding.signInError.isVisible = false
+    }
+
+    private fun showSignInError(message: String) {
+        binding.signInError.text = message
+        binding.signInError.isVisible = true
+    }
+
+    /** Loads the signed-in user's own space: their Arrow Files and their home screen. */
+    private fun beginSession(uid: String) {
+        accountUid = uid
+        filesUser = uid
+        files = ArrowFilesIndex.decode(prefs.getString(filesPrefKey(), null))
+        homeSetup = HomeSetup.decode(prefs.getString(homeSetupPrefKey(), null))
+        adoptDataFromBeforeSignIn(uid)
+        emptyOldTrash()
+        checkUnfinishedDownloads()
+
+        binding.signInScreen.isVisible = false
+        binding.commandBar.isVisible = true
+        binding.homeAccount.text = getString(R.string.home_account, cloud.email.orEmpty())
+        renderHomeApps()
+        if (homeSetup == null) {
+            // Built their home screen on another phone? Bring it here.
+            cloud.fetchHomeSetup(uid) { raw ->
+                val setup = HomeSetup.decode(raw)
+                if (accountUid == uid && homeSetup == null && setup != null) {
+                    homeSetup = setup
+                    prefs.edit().putString(homeSetupPrefKey(), setup.encode()).apply()
+                    renderHomeApps()
+                    hideDesigner()
+                }
+            }
+        }
+        showHome()
+        if (!userMuted) ensureMicPermissionThenListen(userAsked = false)
+    }
+
+    /**
+     * The first account to sign in on this phone takes over what was saved before sign-in
+     * existed: the files in the guest folder and the home screen.
+     */
+    private fun adoptDataFromBeforeSignIn(uid: String) {
+        val guestFiles = prefs.getString(PREF_FILES, null)
+        if (!guestFiles.isNullOrBlank() && files.all.isEmpty()) {
+            val guest = ArrowFilesIndex.decode(guestFiles)
+            getExternalFilesDir(null)?.let { base ->
+                val from = File(base, ArrowFilesIndex.userFolder(ArrowFilesIndex.LOCAL_USER))
+                val to = File(base, ArrowFilesIndex.userFolder(uid))
+                if (from.exists() && !to.exists()) from.renameTo(to)
+            }
+            guest.moveToUser(ArrowFilesIndex.LOCAL_USER, uid)
+            files = guest
+            saveFiles()
+            prefs.edit().remove(PREF_FILES).apply()
+            files.all.forEach { cloud.saveFile(uid, it) }
+        }
+        val oldSetup = HomeSetup.decode(prefs.getString(PREF_HOME_SETUP, null))
+        if (homeSetup == null && oldSetup != null) {
+            homeSetup = oldSetup
+            prefs.edit().putString(homeSetupPrefKey(), oldSetup.encode()).remove(PREF_HOME_SETUP).apply()
+            cloud.saveHomeSetup(uid, oldSetup.encode())
+        }
+    }
+
+    private fun askToSignOut() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.signout_title)
+            .setMessage(R.string.signout_message)
+            .setPositiveButton(R.string.signout) { _, _ -> signOut() }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun signOut() {
+        cloud.signOut()
+        accountUid = null
+        filesUser = ArrowFilesIndex.LOCAL_USER
+        files = ArrowFilesIndex()
+        homeSetup = null
+        designerShown = emptyList()
+        designerTicked.clear()
+        currentApp = null
+        binding.browserScreen.isVisible = false
+        binding.homeScreen.isVisible = true
+        binding.webView.stopLoading()
+        binding.webView.loadUrl("about:blank")
+        renderHomeApps()
+        showSignIn()
     }
 
     // ---------- Arrow Files ----------
@@ -994,11 +1178,13 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 R.string.files_move_to_trash -> {
                     files.moveToTrash(f.id, System.currentTimeMillis())
                     saveFiles()
+                    syncFile(f.id)
                     toast(getString(R.string.files_trashed))
                 }
                 R.string.files_restore -> {
                     files.restore(f.id)
                     saveFiles()
+                    syncFile(f.id)
                     toast(getString(R.string.files_restored))
                 }
                 R.string.files_delete_forever -> {
@@ -1012,6 +1198,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                     fileOf(f)?.delete()
                     files.remove(f.id)
                     saveFiles()
+                    syncFile(f.id)
                     toast(getString(R.string.files_deleted))
                 }
             }
@@ -1152,7 +1339,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
      */
     private fun handleInput(text: String, typed: Boolean) {
         // The Auto Designer has its own text box; the always-on mic waits until it is closed.
-        if (binding.designerScreen.isVisible) return
+        if (binding.designerScreen.isVisible || binding.signInScreen.isVisible) return
         val commands = CommandParser.parseAll(text)
         if (commands.singleOrNull() is Command.Ignored) {
             // Not a command: do nothing. Only a typed line gets a hint, since the

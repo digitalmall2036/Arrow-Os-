@@ -104,4 +104,12 @@ class ArrowFilesTest {
         assertNull(back.byDownloadId(7))
         assertTrue(ArrowFilesIndex.decode("garbage\nmore\tgarbage").all.isEmpty())
     }
+
+    @Test fun filesSavedBeforeSignInMoveToTheAccount() {
+        val index = ArrowFilesIndex()
+        index.add(file("1", "a.pdf"))
+        index.moveToUser("guest", "uid42")
+        assertEquals("ArrowFiles/uid42/websites/canva.com/a.pdf", index.get("1")?.relPath)
+        assertEquals("ArrowFiles/uid42", ArrowFilesIndex.userFolder("uid42"))
+    }
 }
