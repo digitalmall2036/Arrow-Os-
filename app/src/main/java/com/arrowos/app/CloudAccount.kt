@@ -1,5 +1,6 @@
 package com.arrowos.app
 
+import com.google.android.gms.tasks.Tasks
 import com.google.firebase.FirebaseNetworkException
 import com.google.firebase.FirebaseTooManyRequestsException
 import com.google.firebase.auth.FirebaseAuth
@@ -10,6 +11,7 @@ import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import java.util.concurrent.TimeUnit
 
 /**
  * The user's Arrow Os account (Firebase): email sign-in, plus the parts of their space
@@ -48,6 +50,13 @@ class CloudAccount {
 
     fun signOut() = auth.signOut()
 
+    /** The current sign-in token, for the cloud file store. Blocks: call off the main thread. */
+    fun idTokenBlocking(): String? = try {
+        auth.currentUser?.let { Tasks.await(it.getIdToken(false), 30, TimeUnit.SECONDS).token }
+    } catch (e: Exception) {
+        null
+    }
+
     private fun userDoc(uid: String) = db.collection("users").document(uid)
 
     /** The home screen the user built on another phone, or null. */
@@ -78,8 +87,39 @@ class CloudAccount {
                 "path" to f.relPath,
                 "status" to f.status.name,
                 "trashedAt" to f.trashedAt,
+                "inCloud" to f.inCloud,
             ),
         )
+    }
+
+    /** Every file record kept in the account, for showing them on a new phone. */
+    fun fetchFiles(uid: String, done: (List<ArrowFile>) -> Unit) {
+        userDoc(uid).collection("files").get()
+            .addOnSuccessListener { snap ->
+                done(
+                    snap.documents.mapNotNull { d ->
+                        try {
+                            ArrowFile(
+                                id = d.id,
+                                name = d.getString("name") ?: return@mapNotNull null,
+                                source = d.getString("source") ?: "other",
+                                kind = FileKind.valueOf(d.getString("kind") ?: "Other"),
+                                mimeType = d.getString("mimeType") ?: "application/octet-stream",
+                                size = d.getLong("size") ?: 0,
+                                savedAt = d.getLong("savedAt") ?: 0,
+                                originUrl = d.getString("originUrl").orEmpty(),
+                                relPath = d.getString("path") ?: return@mapNotNull null,
+                                status = FileStatus.valueOf(d.getString("status") ?: "Failed"),
+                                trashedAt = d.getLong("trashedAt"),
+                                inCloud = d.getBoolean("inCloud") == true,
+                            )
+                        } catch (e: IllegalArgumentException) {
+                            null
+                        }
+                    },
+                )
+            }
+            .addOnFailureListener { done(emptyList()) }
     }
 
     fun deleteFile(uid: String, fileId: String) {

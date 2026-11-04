@@ -103,6 +103,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     /** The signed-in Arrow Os account (Firebase email sign-in). */
     private val cloud by lazy { CloudAccount() }
 
+    /** The cloud copy of Arrow Files (Supabase Storage), and the one background line that talks to it. */
+    private val cloudFiles by lazy { CloudFiles { cloud.idTokenBlocking() } }
+    private val cloudWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var uploading = false
+
     /** The signed-in user's id, or null on the sign-in screen. */
     private var accountUid: String? = null
 
@@ -193,6 +198,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         unregisterReceiver(downloadDone)
+        cloudWorker.shutdown()
         voice.destroy()
         tts?.shutdown()
         binding.webView.destroy()
@@ -536,6 +542,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             )
             saveFiles()
             syncFile(added)
+            uploadWaitingFiles()
             toast(getString(R.string.files_saved, name))
         } catch (e: Exception) {
             toast(getString(R.string.files_failed, "file"))
@@ -582,6 +589,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
         saveFiles()
         syncFile(f.id)
+        if (ready) uploadWaitingFiles()
         if (announce) toast(getString(if (ready) R.string.files_saved else R.string.files_failed, f.name))
         if (binding.filesScreen.isVisible) renderFiles()
     }
@@ -597,6 +605,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         if (expired.isEmpty()) return
         expired.forEach { f ->
             fileOf(f)?.delete()
+            if (f.inCloud) deleteCloudCopy(f)
             files.remove(f.id)
             syncFile(f.id)
         }
@@ -1003,6 +1012,14 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 }
             }
         }
+        cloud.fetchFiles(uid) { fromCloud ->
+            if (accountUid != uid) return@fetchFiles
+            if (files.mergeFromCloud(fromCloud) > 0) {
+                saveFiles()
+                if (binding.filesScreen.isVisible) renderFiles()
+            }
+        }
+        uploadWaitingFiles()
         showHome()
         if (!userMuted) ensureMicPermissionThenListen(userAsked = false)
     }
@@ -1076,6 +1093,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         hidePrevious()
         filesShowTrash = false
         checkUnfinishedDownloads()
+        uploadWaitingFiles()
         renderFiles()
         binding.filesScreen.isVisible = true
         binding.filesScroll.scrollTo(0, 0)
@@ -1128,7 +1146,15 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 FileStatus.Downloading -> getString(R.string.files_still_downloading)
                 FileStatus.Failed -> getString(R.string.files_failed_short)
                 FileStatus.Ready -> "${Formatter.formatShortFileSize(this, f.size)} · " +
-                    DateUtils.getRelativeTimeSpanString(f.savedAt, now, DateUtils.MINUTE_IN_MILLIS)
+                    DateUtils.getRelativeTimeSpanString(f.savedAt, now, DateUtils.MINUTE_IN_MILLIS) + " · " +
+                    getString(
+                        when {
+                            f.inCloud && fileOf(f)?.exists() != true -> R.string.files_cloud_only
+                            f.inCloud -> R.string.files_in_cloud
+                            files.tooBigForCloud(f) -> R.string.files_phone_only
+                            else -> R.string.files_waiting_upload
+                        },
+                    )
             }
             row.fileDetails.text = "${f.source} · $state"
             row.root.contentDescription = "${f.name}, ${row.fileDetails.text}"
@@ -1196,6 +1222,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                         }
                     }
                     fileOf(f)?.delete()
+                    if (f.inCloud) deleteCloudCopy(f)
                     files.remove(f.id)
                     saveFiles()
                     syncFile(f.id)
@@ -1222,7 +1249,63 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         return FileProvider.getUriForFile(this, "$packageName.files", file)
     }
 
-    private fun openFile(f: ArrowFile) {
+    /**
+     * Runs [action] once the file is on this phone. A file that is only in the cloud
+     * (saved on another phone) is downloaded first.
+     */
+    private fun withLocalCopy(f: ArrowFile, action: () -> Unit) {
+        val local = fileOf(f)
+        if (f.status != FileStatus.Ready || local == null || local.exists() || !f.inCloud) {
+            action()
+            return
+        }
+        toast(getString(R.string.files_fetching, f.name))
+        cloudWorker.execute {
+            val ok = cloudFiles.download(f.relPath, local)
+            runOnUiThread {
+                if (ok) {
+                    if (binding.filesScreen.isVisible) renderFiles()
+                    action()
+                } else {
+                    toast(getString(R.string.files_fetch_failed))
+                }
+            }
+        }
+    }
+
+    /** Copies every waiting file to the user's cloud folder, one at a time, on Wi-Fi or mobile data. */
+    private fun uploadWaitingFiles() {
+        val uid = accountUid ?: return
+        if (uploading) return
+        val waiting = files.waitingForUpload()
+        if (waiting.isEmpty()) return
+        uploading = true
+        cloudWorker.execute {
+            for (f in waiting) {
+                if (accountUid != uid) break
+                val local = fileOf(f)
+                if (local == null || !local.exists()) continue
+                if (!cloudFiles.upload(local, f.relPath, f.mimeType)) break // offline or refused: try again later
+                runOnUiThread {
+                    if (accountUid == uid) {
+                        files.update(f.id) { it.copy(inCloud = true) }
+                        saveFiles()
+                        syncFile(f.id)
+                        if (binding.filesScreen.isVisible) renderFiles()
+                    }
+                }
+            }
+            runOnUiThread { uploading = false }
+        }
+    }
+
+    private fun deleteCloudCopy(f: ArrowFile) {
+        cloudWorker.execute { cloudFiles.delete(f.relPath) }
+    }
+
+    private fun openFile(f: ArrowFile) = withLocalCopy(f) { openFileNow(f) }
+
+    private fun openFileNow(f: ArrowFile) {
         val uri = shareableUri(f) ?: return
         val intent = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, f.mimeType)
@@ -1234,7 +1317,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
     }
 
-    private fun shareFile(f: ArrowFile) {
+    private fun shareFile(f: ArrowFile) = withLocalCopy(f) { shareFileNow(f) }
+
+    private fun shareFileNow(f: ArrowFile) {
         val uri = shareableUri(f) ?: return
         val intent = Intent(Intent.ACTION_SEND)
             .setType(f.mimeType)
@@ -1244,7 +1329,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     }
 
     /** Copies the file to the phone's own Downloads/ArrowOs folder, where every app can see it. */
-    private fun saveToPhone(f: ArrowFile) {
+    private fun saveToPhone(f: ArrowFile) = withLocalCopy(f) { saveToPhoneNow(f) }
+
+    private fun saveToPhoneNow(f: ArrowFile) {
         val src = fileOf(f)
         if (src == null || !src.exists()) {
             toast(getString(R.string.files_missing))

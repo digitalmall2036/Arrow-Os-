@@ -112,4 +112,35 @@ class ArrowFilesTest {
         assertEquals("ArrowFiles/uid42/websites/canva.com/a.pdf", index.get("1")?.relPath)
         assertEquals("ArrowFiles/uid42", ArrowFilesIndex.userFolder("uid42"))
     }
+
+    @Test fun onlyReadySmallFilesWaitForUpload() {
+        val index = ArrowFilesIndex()
+        index.add(file("1", "a.pdf", savedAt = 2))
+        index.add(file("2", "b.pdf", savedAt = 1))
+        index.add(file("3", "big.mp4").copy(size = ArrowFilesIndex.CLOUD_MAX_BYTES + 1))
+        index.add(file("4", "c.pdf").copy(inCloud = true))
+        index.add(file("5", "d.pdf").copy(status = FileStatus.Downloading))
+        index.add(file("6", "e.pdf"))
+        index.moveToTrash("6", now = 5)
+        assertEquals(listOf("2", "1"), index.waitingForUpload().map { it.id })
+        assertTrue(index.tooBigForCloud(index.get("3")!!))
+    }
+
+    @Test fun cloudFilesShowUpOnANewPhone() {
+        val index = ArrowFilesIndex()
+        index.add(file("1", "a.pdf").copy(inCloud = true))
+        val fromCloud = listOf(
+            file("1", "a.pdf").copy(inCloud = true),
+            file("2", "b.pdf").copy(inCloud = true),
+            file("3", "phone-only.pdf"),
+        )
+        assertEquals(1, index.mergeFromCloud(fromCloud))
+        assertEquals(setOf("1", "2"), index.all.map { it.id }.toSet())
+    }
+
+    @Test fun cloudFlagSurvivesSaving() {
+        val index = ArrowFilesIndex()
+        index.add(file("1", "a.pdf").copy(inCloud = true))
+        assertTrue(ArrowFilesIndex.decode(index.encode()).get("1")!!.inCloud)
+    }
 }

@@ -64,6 +64,8 @@ data class ArrowFile(
     val downloadId: Long = -1,
     /** When it was moved to Trash, or null when it isn't in Trash. */
     val trashedAt: Long? = null,
+    /** A copy is in the user's cloud folder (Supabase Storage), under the same [relPath]. */
+    val inCloud: Boolean = false,
 ) {
     val inTrash: Boolean get() = trashedAt != null
 }
@@ -158,6 +160,29 @@ class ArrowFilesIndex {
         return "$base ($i)$ext"
     }
 
+    /** Ready files outside Trash with no cloud copy yet, small enough for the cloud. Oldest first. */
+    fun waitingForUpload(): List<ArrowFile> =
+        files.filter { it.status == FileStatus.Ready && !it.inCloud && !it.inTrash && it.size in 1..CLOUD_MAX_BYTES }
+            .sortedBy { it.savedAt }
+
+    /** Too big for the free cloud plan: these stay on the phone only. */
+    fun tooBigForCloud(f: ArrowFile) = f.size > CLOUD_MAX_BYTES
+
+    /**
+     * Adds the files the account has in the cloud that this phone doesn't know yet
+     * (e.g. on a new phone). Returns how many were added.
+     */
+    fun mergeFromCloud(cloudFiles: List<ArrowFile>): Int {
+        var added = 0
+        cloudFiles.filter { it.inCloud && it.status == FileStatus.Ready }.forEach { f ->
+            if (get(f.id) == null) {
+                files.add(f.copy(downloadId = -1))
+                added++
+            }
+        }
+        return added
+    }
+
     /**
      * Hands every file from [fromUser]'s folder to [toUser], e.g. the files saved before the
      * first sign-in. The caller moves the folder on disk the same way.
@@ -173,6 +198,7 @@ class ArrowFilesIndex {
         listOf(
             VERSION, f.id, f.name, f.source, f.kind.name, f.mimeType, f.size.toString(), f.savedAt.toString(),
             f.originUrl, f.relPath, f.status.name, f.downloadId.toString(), f.trashedAt?.toString().orEmpty(),
+            if (f.inCloud) "1" else "0",
         ).joinToString("\t") { escape(it) }
     }
 
@@ -181,6 +207,8 @@ class ArrowFilesIndex {
         /** Until email sign-in arrives, everything belongs to the one person using this phone. */
         const val LOCAL_USER = "guest"
         const val TRASH_DAYS = 30L
+        /** The free Supabase plan takes files up to 50 MB. */
+        const val CLOUD_MAX_BYTES = 50L * 1024 * 1024
         private const val DAY_MS = 24L * 60 * 60 * 1000
         private const val VERSION = "1"
 
@@ -194,6 +222,7 @@ class ArrowFilesIndex {
                         id = p[1], name = p[2], source = p[3], kind = FileKind.valueOf(p[4]), mimeType = p[5],
                         size = p[6].toLong(), savedAt = p[7].toLong(), originUrl = p[8], relPath = p[9],
                         status = FileStatus.valueOf(p[10]), downloadId = p[11].toLong(), trashedAt = p[12].toLongOrNull(),
+                        inCloud = p.getOrNull(13) == "1",
                     )
                 } catch (e: IllegalArgumentException) {
                     return@forEach

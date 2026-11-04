@@ -65,8 +65,17 @@ The Firestore security rules are in [`firestore.rules`](firestore.rules): paste 
 Firebase → Firestore Database → Rules and tap **Publish**, so each user can only read
 their own data.
 
-Coming next: a cloud copy of the files themselves (Supabase Storage, free plan),
-uploaded on Wi-Fi or mobile data.
+## Cloud copy of Arrow Files (Supabase)
+
+Every file in Arrow Files is also copied to the account's private folder in Supabase
+Storage (free plan, bucket `arrow-files`, same path as on the phone). Uploads run on
+Wi-Fi or mobile data, one file at a time, and pick up again after the phone was offline.
+Each file shows **in cloud**, **waiting to upload**, or **phone only** (over the free
+plan's 50 MB limit). On a new phone, after signing in, the files from the account are
+listed straight away and downloaded when opened.
+
+One-time setup in Supabase: the Firebase third-party sign-in must be on, and the rules in
+[`supabase-storage.sql`](supabase-storage.sql) must be run once in the SQL Editor.
 
 ## Install the APK (from your phone)
 

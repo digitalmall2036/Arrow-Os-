@@ -70,7 +70,7 @@
     <string name="files_trash">Trash</string>
     <string name="files_back_to_files">Files</string>
     <string name="files_trash_title">Trash</string>
-    <string name="files_hint">Every file you download in Arrow Os, newest first. Kept on this phone in your own folder.</string>
+    <string name="files_hint">Every file you download in Arrow Os, newest first. Kept on this phone and copied to your account.</string>
     <string name="files_trash_hint">Deleted files stay here for 30 days, then they are removed for good.</string>
     <string name="files_empty">No files yet. Anything you download from a website inside Arrow Os lands here.</string>
     <string name="files_trash_empty">Trash is empty.</string>
@@ -98,6 +98,12 @@
     <string name="files_deleted">Deleted</string>
     <string name="files_cant_download">This file can\'t be downloaded here</string>
     <string name="say_files">Arrow Files</string>
+    <string name="files_in_cloud">in cloud</string>
+    <string name="files_cloud_only">in cloud, tap to get</string>
+    <string name="files_waiting_upload">waiting to upload</string>
+    <string name="files_phone_only">phone only, over 50 MB</string>
+    <string name="files_fetching">Getting %1$s from your account…</string>
+    <string name="files_fetch_failed">Couldn\'t get the file. Check the internet and try again.</string>
 
     <!-- Sign-in -->
     <string name="signin_title">Welcome to Arrow Os</string>
