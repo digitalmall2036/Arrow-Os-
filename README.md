@@ -17,6 +17,27 @@ These are the apps' **websites** (their mobile sites), not the installed apps. E
 out to another app. Links that try to jump to the real YouTube/Facebook/etc. app are
 kept inside Arrow Os.
 
+## Auto Designer: Arrow Business Os
+
+The first time Arrow Os opens, a welcome bar says **"Welcome to Arrow Business Os.
+What is your professional / business category?"**
+
+1. Type your business or profession (for example *Photographer*, *Restaurant*,
+   *Lawyer*, *poultry farming*), or tap one of the examples, then tap **Find apps**.
+   The Auto Designer lists the apps and websites people in that line of work use,
+   plus a few that help any business.
+2. Tick the ones you want and tap **Add to my home screen**. Those become your home
+   screen. Tapping one opens it straight away, inside Arrow Os.
+
+Tap **Change my business or apps** on the home screen to run it again. You can also
+say "tap open" and the name of any app on your home screen, for example
+"tap open Canva". YouTube, Facebook, Instagram, TikTok and 9apps keep working by
+voice even when they are not on the home screen.
+
+The catalog covers 24 business categories and about 120 apps and websites. It lives
+in `AutoDesigner.kt`; if nothing matches what was typed, Arrow Os offers general
+business tools and a web search for more.
+
 ## Install the APK (from your phone)
 
 **Easiest: the "latest" release**
@@ -115,6 +136,7 @@ app/src/main/java/com/arrowos/app/
   CommandParser.kt    the "tap" / "search" command language (pure Kotlin, unit tested)
   WebActions.kt       JavaScript helpers that act inside the page (tap, scroll, play, type)
   ArrowApp.kt         the five apps: names, URLs, search URLs, spoken aliases
+  AutoDesigner.kt     business categories, the apps for each, and the matcher (unit tested)
 ```
 
 Build locally with `./gradlew assembleDebug`; run tests with `./gradlew testDebugUnitTest`.
@@ -122,4 +144,9 @@ CI (`.github/workflows/build-apk.yml`) runs the tests and builds the APK on ever
 and pull request.
 
 To add an app, add an entry to `ArrowApp` with its URL, search URL, and spoken names.
-It shows up on the home screen and in voice commands automatically.
+It works in voice commands automatically. To offer it in the Auto Designer, add it to
+`AutoDesigner.tools` and to the categories it fits.
+
+To add a business category or tool to the Auto Designer, edit `AutoDesigner.kt`: tools
+have a fixed `id` (saved on the phone, so never rename one), and categories list the
+words people use for that work plus the tool ids to suggest.

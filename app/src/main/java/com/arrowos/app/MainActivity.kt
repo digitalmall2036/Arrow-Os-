@@ -32,6 +32,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,6 +43,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.arrowos.app.databinding.ActivityMainBinding
 import com.arrowos.app.databinding.ItemAppTileBinding
+import com.arrowos.app.databinding.ItemDesignerToolBinding
 import com.arrowos.app.databinding.ItemPreviousTabBinding
 import java.util.Locale
 
@@ -79,6 +82,14 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private lateinit var previous: TabHistory
     private val prefs by lazy { getSharedPreferences("arrow_os", MODE_PRIVATE) }
 
+    /** The user's business and the apps they ticked in the Auto Designer; null until they finish it. */
+    private var homeSetup: HomeSetup? = null
+
+    /** Auto Designer state while it is open: what was searched, what is shown and what is ticked. */
+    private var designerQuery = ""
+    private var designerShown: List<BusinessTool> = emptyList()
+    private val designerTicked = linkedSetOf<String>()
+
     /** The address the error page is standing in for; it is not a real visit. */
     private var errorPageUrl: String? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -100,7 +111,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         voice = VoiceController(this, this)
         web = WebActions(binding.webView)
         previous = TabHistory.decode(prefs.getString(PREF_PREVIOUS, null))
+        homeSetup = HomeSetup.decode(prefs.getString(PREF_HOME_SETUP, null))
         setupHomeScreen()
+        setupDesigner()
         setupPreviousScreen()
         setupBrowser()
         setupVoiceBar()
@@ -134,21 +147,42 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     // ---------- Home screen ----------
 
     private fun setupHomeScreen() {
+        binding.homePrevious.setOnClickListener { showPrevious() }
+        binding.homeChangeBusiness.setOnClickListener { showDesigner() }
+        renderHomeApps()
+    }
+
+    /** The home screen shows exactly the apps the user ticked in the Auto Designer. */
+    private fun renderHomeApps() {
+        binding.appGrid.removeAllViews()
+        val setup = homeSetup
+        val tools = setup?.tools.orEmpty()
         val inflater = LayoutInflater.from(this)
-        ArrowApp.entries.forEach { app ->
+        tools.forEach { tool ->
             val tile = ItemAppTileBinding.inflate(inflater, binding.appGrid, false)
-            tile.appIcon.text = app.initial
-            tile.appIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(app.colorHex))
-            tile.appLabel.text = app.label
-            tile.root.contentDescription = getString(R.string.open_app, app.label)
-            tile.root.setOnClickListener { openApp(app) }
+            tile.appIcon.text = tool.initial
+            tile.appIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(tool.colorHex))
+            tile.appLabel.text = tool.label
+            tile.appLabel.maxLines = 2
+            tile.appLabel.gravity = Gravity.CENTER
+            tile.root.contentDescription = getString(R.string.open_app, tool.label)
+            tile.root.setOnClickListener { openTool(tool) }
             binding.appGrid.addView(tile.root)
         }
-        binding.homePrevious.setOnClickListener { showPrevious() }
+        binding.homeEmpty.isVisible = tools.isEmpty()
+        binding.homeBusiness.isVisible = setup != null && setup.category.isNotBlank()
+        binding.homeBusiness.text = getString(R.string.home_business, setup?.category.orEmpty())
+    }
+
+    /** Opens a home screen app straight away, inside Arrow Os. */
+    private fun openTool(tool: BusinessTool) {
+        val app = ArrowApp.fromUrl(tool.url)
+        if (app != null) openApp(app, tool.url) else openWebsite(tool.url, tool.label)
     }
 
     private fun showHome() {
         hidePrevious()
+        if (homeSetup == null) showDesigner()
         currentApp = null
         binding.homeScreen.isVisible = true
         binding.browserScreen.isVisible = false
@@ -316,6 +350,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private fun load(url: String, freshHistory: Boolean) {
         hidePrevious()
+        hideDesigner()
         errorPageUrl = null
         binding.homeScreen.isVisible = false
         binding.browserScreen.isVisible = true
@@ -393,6 +428,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private fun goBack() {
         when {
             fullscreenView != null -> exitFullscreen()
+            binding.designerScreen.isVisible -> if (homeSetup != null) hideDesigner()
             binding.previousScreen.isVisible -> hidePrevious()
             binding.browserScreen.isVisible && binding.webView.canGoBack() -> binding.webView.goBack()
             binding.browserScreen.isVisible -> showHome()
@@ -402,7 +438,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private fun setupBackHandling() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (binding.homeScreen.isVisible && fullscreenView == null && !binding.previousScreen.isVisible) {
+                val firstDesign = binding.designerScreen.isVisible && homeSetup == null
+                val onHome = binding.homeScreen.isVisible && !binding.designerScreen.isVisible && !binding.previousScreen.isVisible
+                if (fullscreenView == null && (onHome || firstDesign)) {
                     // On the Arrow Os home screen, back leaves the app as usual.
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -412,6 +450,172 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 }
             }
         })
+    }
+
+    // ---------- Auto Designer ----------
+
+    private fun setupDesigner() {
+        val pad = (12 * resources.displayMetrics.density).toInt()
+        AutoDesigner.popular.forEach { example ->
+            val chip = TextView(this).apply {
+                text = example
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
+                textSize = 14f
+                background = ContextCompat.getDrawable(this@MainActivity, R.drawable.chip_bg)
+                setPadding(pad + pad / 3, pad * 2 / 3, pad + pad / 3, pad * 2 / 3)
+                setOnClickListener {
+                    binding.designerInput.setText(example)
+                    runDesigner()
+                }
+            }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            lp.marginEnd = pad * 2 / 3
+            binding.designerExamples.addView(chip, lp)
+        }
+        binding.designerFind.setOnClickListener { runDesigner() }
+        binding.designerInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_GO) {
+                runDesigner()
+                true
+            } else {
+                false
+            }
+        }
+        binding.designerCancel.setOnClickListener { hideDesigner() }
+        binding.designerDone.setOnClickListener { saveDesigner() }
+        binding.designerWebSearch.setOnClickListener {
+            val query = getString(R.string.designer_web_search, designerQuery)
+            openWebsite(WebLinks.searchUrl("best apps and websites for $designerQuery"), query)
+        }
+    }
+
+    /**
+     * Step 1 of the Auto Designer: the welcome bar asks for the user's business.
+     * When the user already has a setup, it opens on their current choices so they can change them.
+     */
+    private fun showDesigner() {
+        exitFullscreen()
+        hidePrevious()
+        binding.designerScreen.isVisible = true
+        binding.commandBar.isVisible = false
+        val setup = homeSetup
+        binding.designerCancel.isVisible = setup != null
+        if (designerShown.isNotEmpty()) return // came back from a web search: keep what was there
+        if (setup != null) {
+            binding.designerInput.setText(setup.category)
+            designerTicked.clear()
+            designerTicked.addAll(setup.toolIds)
+            runDesigner(keepTicks = true)
+        } else {
+            binding.designerInput.text.clear()
+            binding.designerResultTitle.text = getString(R.string.designer_start)
+            binding.designerList.removeAllViews()
+            binding.designerWebSearch.isVisible = false
+            updateDesignerDone()
+        }
+    }
+
+    private fun hideDesigner() {
+        if (!binding.designerScreen.isVisible) return
+        binding.designerScreen.isVisible = false
+        binding.commandBar.isVisible = true
+        hideKeyboard(binding.designerInput)
+        if (homeSetup != null) {
+            designerShown = emptyList()
+            designerTicked.clear()
+        }
+    }
+
+    /** Step 2: find the apps and websites for what the user typed, and list them with tick boxes. */
+    private fun runDesigner(keepTicks: Boolean = false) {
+        val query = binding.designerInput.text.toString().trim()
+        if (query.isEmpty()) {
+            toast(getString(R.string.designer_empty_input))
+            return
+        }
+        hideKeyboard(binding.designerInput)
+        binding.designerInput.clearFocus()
+        designerQuery = query
+        val found = AutoDesigner.suggest(query)
+        designerShown = found.all
+        // Ticks only make sense for apps on the list.
+        val shownIds = designerShown.map { it.id }.toSet()
+        if (!keepTicks) designerTicked.retainAll(shownIds)
+
+        val categoryName = found.categories.joinToString(" & ") { it.name }
+        binding.designerResultTitle.text = if (found.matched) {
+            getString(R.string.designer_results, categoryName)
+        } else {
+            getString(R.string.designer_no_match, query)
+        }
+
+        val list = binding.designerList
+        list.removeAllViews()
+        if (found.forCategory.isNotEmpty()) {
+            addDesignerHeader(getString(R.string.designer_section_category, categoryName))
+            found.forCategory.forEach(::addDesignerRow)
+        }
+        addDesignerHeader(getString(R.string.designer_section_general))
+        found.general.forEach(::addDesignerRow)
+
+        binding.designerWebSearch.text = getString(R.string.designer_web_search, query.lowercase())
+        binding.designerWebSearch.isVisible = true
+        binding.designerScroll.scrollTo(0, 0)
+        updateDesignerDone()
+    }
+
+    private fun addDesignerHeader(text: String) {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val header = TextView(this).apply {
+            this.text = text
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.accent))
+            textSize = 13f
+            setAllCaps(true)
+            letterSpacing = 0.08f
+            setPadding(pad, pad, pad, pad / 3)
+        }
+        binding.designerList.addView(header)
+    }
+
+    private fun addDesignerRow(tool: BusinessTool) {
+        val row = ItemDesignerToolBinding.inflate(LayoutInflater.from(this), binding.designerList, false)
+        row.toolIcon.text = tool.initial
+        row.toolIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(tool.colorHex))
+        row.toolLabel.text = tool.label
+        row.toolDescription.text = tool.description
+        row.toolCheck.isChecked = tool.id in designerTicked
+        row.root.contentDescription = "${tool.label}. ${tool.description}"
+        row.root.setOnClickListener {
+            if (!designerTicked.remove(tool.id)) designerTicked.add(tool.id)
+            row.toolCheck.isChecked = tool.id in designerTicked
+            updateDesignerDone()
+        }
+        binding.designerList.addView(row.root)
+    }
+
+    private fun updateDesignerDone() {
+        val count = designerTicked.size
+        binding.designerDone.isEnabled = count > 0
+        binding.designerDone.alpha = if (count > 0) 1f else 0.5f
+        binding.designerDone.text = if (count > 0) getString(R.string.designer_done, count) else getString(R.string.designer_done_none)
+    }
+
+    /** The ticked apps become the home screen, in the order they were listed. */
+    private fun saveDesigner() {
+        val ids = designerShown.map { it.id }.filter { it in designerTicked }
+        if (ids.isEmpty()) return
+        val category = designerQuery.replaceFirstChar { it.titlecase(Locale.getDefault()) }
+        val setup = HomeSetup(category, ids)
+        homeSetup = setup
+        prefs.edit().putString(PREF_HOME_SETUP, setup.encode()).apply()
+        renderHomeApps()
+        hideDesigner()
+        if (!binding.homeScreen.isVisible) showHome()
+        confirm(getString(R.string.designer_saved))
+    }
+
+    private fun hideKeyboard(view: View) {
+        getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(view.windowToken, 0)
     }
 
     // ---------- Previous (tab history) ----------
@@ -541,6 +745,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
      * ("tap scroll to the second video and play it"); they run one after another.
      */
     private fun handleInput(text: String, typed: Boolean) {
+        // The Auto Designer has its own text box; the always-on mic waits until it is closed.
+        if (binding.designerScreen.isVisible) return
         val commands = CommandParser.parseAll(text)
         if (commands.singleOrNull() is Command.Ignored) {
             // Not a command: do nothing. Only a typed line gets a hint, since the
@@ -625,6 +831,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 }
             }
             is Command.OpenWebsite -> {
+                homeSetup?.findTool(command.target)?.let { tool ->
+                    confirm(getString(R.string.say_opening, tool.label))
+                    openTool(tool)
+                    return
+                }
                 confirm(getString(R.string.say_opening, command.target))
                 openWebsite(WebLinks.websiteUrl(command.target), command.target)
             }
@@ -670,6 +881,16 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             Command.Unmute -> inPage { web.unmute { ok -> toast(if (ok) "Sound on" else "No video on this page") } }
 
             is Command.Tap -> {
+                // "tap open Canva" (or just "tap Canva" on the home screen): any app the user put on their home screen.
+                val spoken = CommandParser.normalize(command.spoken)
+                val toolName = Regex("^(?:open|launch|start|go to|switch to|visit|take me to) (.+)$")
+                    .find(spoken)?.groupValues?.get(1) ?: spoken.takeIf { !inApp && !binding.previousScreen.isVisible }
+                val tool = toolName?.let { homeSetup?.findTool(it.removeSuffix(" app")) }
+                if (tool != null) {
+                    confirm(getString(R.string.say_opening, tool.label))
+                    openTool(tool)
+                    return
+                }
                 if (binding.previousScreen.isVisible) {
                     // "tap Tom and Jerry" on the Previous screen opens the tab with that name.
                     val tab = previous.find(command.spoken)
@@ -752,6 +973,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
                 TAP does anything on screen:
                 tap open YouTube · tap home · tap back
+                tap open (any app on your home screen, for example tap open Canva)
                 tap previous (every tab you opened; then tap 2 to go back to one)
                 tap like this video · tap comment · tap share · tap follow · tap subscribe
                 tap play the second video on this page
@@ -802,6 +1024,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private companion object {
         const val PREF_PREVIOUS = "previous_tabs"
+        const val PREF_HOME_SETUP = "home_setup"
         val previousScrollCommands = setOf(
             Command.ScrollDown, Command.ScrollUp, Command.ScrollTop, Command.ScrollBottom, Command.NextItem, Command.PreviousItem,
         )

@@ -46,4 +46,22 @@
     <string name="say_previous_opening">Opening %1$s</string>
     <string name="say_previous_cleared">Previous cleared</string>
     <string name="previous_not_found">There is no tab number %1$d in Previous</string>
+    <!-- Auto Designer -->
+    <string name="designer_welcome">Welcome to Arrow Business Os</string>
+    <string name="designer_question">What is your professional / business category?</string>
+    <string name="designer_hint">e.g. Photographer, Restaurant, Lawyer</string>
+    <string name="designer_find">Find apps</string>
+    <string name="designer_start">Type your business or profession, or tap one below. Arrow Os will find the apps and websites for it.</string>
+    <string name="designer_results">Apps for %1$s. Tick the ones you want on your home screen.</string>
+    <string name="designer_no_match">No exact match for \"%1$s\" yet. These work for any business. Tick the ones you want, or search the web for more.</string>
+    <string name="designer_section_category">For %1$s</string>
+    <string name="designer_section_general">Useful for any business</string>
+    <string name="designer_web_search">Search the web for more %1$s apps</string>
+    <string name="designer_done_none">Tick at least one app</string>
+    <string name="designer_done">Add %1$d to my home screen</string>
+    <string name="designer_change">Change my business or apps</string>
+    <string name="designer_saved">Your home screen is ready</string>
+    <string name="designer_empty_input">Type your business or profession first</string>
+    <string name="home_business">Your %1$s space</string>
+    <string name="home_empty">No apps yet. Tap \"Change my business or apps\" to pick some.</string>
 </resources>
