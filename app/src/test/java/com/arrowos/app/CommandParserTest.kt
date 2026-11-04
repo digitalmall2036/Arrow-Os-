@@ -145,4 +145,24 @@ class CommandParserTest {
         assertEquals("https://www.tiktok.com/search?q=a%26b", ArrowApp.TIKTOK.searchUrl("a&b"))
         assertEquals("https://www.instagram.com/explore/tags/funnycats/", ArrowApp.INSTAGRAM.searchUrl("Funny Cats"))
     }
+
+    @Test fun tapPreviousOpensTabHistory() {
+        assertEquals(Command.ShowPrevious, parse("tap previous"))
+        assertEquals(Command.ShowPrevious, parse("Tap previous."))
+        assertEquals(Command.ShowPrevious, parse("tab previous")) // common mishearing
+        assertEquals(Command.ShowPrevious, parse("hey arrow tap previous please"))
+        assertEquals(Command.ShowPrevious, parse("tap previous tabs"))
+        assertEquals(Command.ShowPrevious, parse("tap show previous"))
+        assertEquals(Command.ShowPrevious, parse("tap open previous"))
+        assertEquals(Command.ShowPrevious, parse("tap history"))
+        assertEquals(Command.ShowPrevious, parse("tap on previous"))
+        assertEquals(Command.ClearPrevious, parse("tap clear previous"))
+        assertEquals(Command.ClearPrevious, parse("tap clear history"))
+        assertTrue(parse("previous") is Command.Ignored) // still needs "tap"
+        // Feeds and pages keep their own previous.
+        assertEquals(Command.PreviousItem, parse("tap previous video"))
+        assertEquals(Command.PreviousItem, parse("tap go to previous"))
+        assertEquals(Command.Back, parse("tap previous page"))
+        assertEquals(listOf(Command.Open(ArrowApp.YOUTUBE), Command.ShowPrevious), all("tap open YouTube then tap previous"))
+    }
 }

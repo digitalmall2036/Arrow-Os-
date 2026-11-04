@@ -35,4 +35,15 @@
     <string name="error_blocked">Your internet connection refused %1$s. The site may be down, or blocked by your network.</string>
     <string name="error_generic">The page didn\'t load: %1$s</string>
     <string name="retry">Try again</string>
+
+    <string name="previous">Previous</string>
+    <string name="previous_clear">Clear</string>
+    <string name="previous_hint">Every tab opened in Arrow Os, newest first. Tap one to go straight back to it, or say "tap 2".</string>
+    <string name="previous_empty">Nothing here yet. Pages you open in Arrow Os will show up here.</string>
+    <string name="previous_clear_title">Clear Previous?</string>
+    <string name="previous_clear_message">This removes every tab from the Previous list.</string>
+    <string name="say_previous">Previous tabs</string>
+    <string name="say_previous_opening">Opening %1$s</string>
+    <string name="say_previous_cleared">Previous cleared</string>
+    <string name="previous_not_found">There is no tab number %1$d in Previous</string>
 </resources>
