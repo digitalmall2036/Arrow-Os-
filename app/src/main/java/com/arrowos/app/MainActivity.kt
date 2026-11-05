@@ -1938,7 +1938,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         dialog.show()
     }
 
-    /** True when [f] fits what the site's file box accepts ("image/*", "video/mp4", ".pdf"). */
+    /** True when [f] fits what the site's file box accepts (for example any image, "video/mp4" or ".pdf"). */
     private fun matchesAccept(f: ArrowFile, accept: List<String>): Boolean {
         val types = accept.flatMap { it.split(',') }.map { it.trim() }.filter { it.isNotEmpty() }
         if (types.isEmpty() || "*/*" in types) return true
