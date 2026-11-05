@@ -319,6 +319,14 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         filesTile.root.contentDescription = getString(R.string.open_app, getString(R.string.files_title))
         filesTile.root.setOnClickListener { showFiles() }
         binding.essentialsGrid.addView(filesTile.root)
+        // Arrow Cloner, the assistant that does work in Arrow Os, is always second.
+        val clonerTile = ItemAppTileBinding.inflate(inflater, binding.essentialsGrid, false)
+        clonerTile.appIcon.text = "AC"
+        clonerTile.appIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(CLONER_COLOR))
+        clonerTile.appLabel.text = getString(R.string.cloner_app)
+        clonerTile.root.contentDescription = getString(R.string.open_app, getString(R.string.cloner_app))
+        clonerTile.root.setOnClickListener { openCloner() }
+        binding.essentialsGrid.addView(clonerTile.root)
         AutoDesigner.essentials.forEach { addHomeTile(binding.essentialsGrid, it, inflater) }
 
         binding.appGrid.removeAllViews()
@@ -699,9 +707,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     /** Keeps every link inside Arrow Os. Returns true when the WebView should NOT load [url] itself. */
     private fun handleUrl(view: WebView, url: String): Boolean {
-        // "Run in Arrow Os" on the Arrow Cloner page (or any site): hand the task to Arrow Cloner.
-        if (ClonerTask.isTaskLink(url)) {
-            ClonerTask.fromLink(url)?.let { askToRunClonerTask(it) } ?: toast("That Arrow Cloner link has no steps")
+        // Arrow Cloner links: from its built-in app (runs straight away) or from any site (asks first).
+        if (ClonerTask.isClonerLink(url)) {
+            handleClonerLink(url, fromClonerApp = view.url?.startsWith(ClonerTask.APP_PAGE) == true)
             return true
         }
         if (url.startsWith("http://") || url.startsWith("https://")) {
@@ -2035,6 +2043,12 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         // The Auto Designer has its own text box; the always-on mic waits until it is closed.
         if (binding.designerScreen.isVisible || binding.signInScreen.isVisible) return
         val commands = CommandParser.parseAll(text)
+        if (commands.singleOrNull() is Command.Ignored && onClonerApp()) {
+            // On the Arrow Cloner screen, plain words are a job for Arrow Cloner to plan.
+            binding.voiceStatus.text = getString(R.string.cloner_planning, text.trim())
+            webView.evaluateJavascript("window.ArrowCloner && ArrowCloner.setGoal(${org.json.JSONObject.quote(text.trim())})", null)
+            return
+        }
         if (commands.singleOrNull() is Command.Ignored) {
             // Not a command: do nothing. Only a typed line gets a hint, since the
             // always-on mic hears plenty of talk that isn't meant for Arrow Os.
@@ -2248,6 +2262,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             Command.StartTeaching -> startTeaching()
             is Command.StopTeaching -> stopTeaching(command.name)
             Command.ShowSkills -> showClonerSkills()
+            Command.OpenCloner -> {
+                confirm(getString(R.string.say_opening, getString(R.string.cloner_app)))
+                openCloner()
+            }
             is Command.RunSkill -> {
                 val skill = clonerSkills.find(command.name)
                 if (skill != null) {
@@ -2262,6 +2280,29 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     }
 
     // ---------- Arrow Cloner ----------
+
+    /** Arrow Cloner's own app, built into Arrow Os: where the user gives it work. */
+    private fun openCloner() = openWebsite(ClonerTask.APP_PAGE, getString(R.string.cloner_app))
+
+    private fun onClonerApp(): Boolean = inApp && webView.url?.startsWith(ClonerTask.APP_PAGE) == true
+
+    private fun handleClonerLink(url: String, fromClonerApp: Boolean) {
+        when (ClonerTask.linkAction(url)) {
+            "skills" -> showClonerSkills()
+            "teach" -> startTeaching()
+            "run" -> {
+                val task = ClonerTask.fromLink(url)
+                when {
+                    task == null -> toast("That Arrow Cloner link has no steps")
+                    // The built-in app already showed the steps and the user tapped "Do it" there.
+                    fromClonerApp && ClonerTask.hasFlag(url, "go") -> runClonerTask(task)
+                    fromClonerApp && ClonerTask.hasFlag(url, "save") -> saveClonerSkill(task)
+                    else -> askToRunClonerTask(task)
+                }
+            }
+            else -> toast("Arrow Os doesn't know that Arrow Cloner link")
+        }
+    }
 
     private fun clonerPrefKey() = "cloner_skills_${accountUid ?: ArrowFilesIndex.LOCAL_USER}"
 
@@ -2447,6 +2488,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 tap teach arrow cloner (then do the work with tap and search)
                 tap save skill as morning post
                 tap do morning post · tap cloner skills
+                tap open arrow cloner, then just say the job
+                (for example "watch tom and jerry"), then tap do it
 
                 Anything that doesn't start with tap or search is ignored.
                 """.trimIndent(),
@@ -2493,6 +2536,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         const val PREF_LAST_TITLE = "last_title"
         const val PREF_LAST_AT = "last_at"
         const val FILES_COLOR = "#0091B3"
+        const val CLONER_COLOR = "#2563EB"
         val previousScrollCommands = setOf(
             Command.ScrollDown, Command.ScrollUp, Command.ScrollTop, Command.ScrollBottom, Command.NextItem, Command.PreviousItem,
         )

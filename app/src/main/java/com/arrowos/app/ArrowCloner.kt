@@ -29,6 +29,21 @@ data class ClonerTask(val name: String, val steps: List<String>) {
         const val MAX_STEPS = 60
         const val MAX_WAIT_SECONDS = 60
 
+        /** The page of the Arrow Cloner app built into Arrow Os. */
+        const val APP_PAGE = "file:///android_asset/cloner/index.html"
+
+        /** True for any `arrowos://` link. */
+        fun isClonerLink(link: String): Boolean = link.trim().lowercase().startsWith("$SCHEME://")
+
+        /** What an `arrowos://` link asks for: "run", "skills" or "teach". */
+        fun linkAction(link: String): String? =
+            if (!isClonerLink(link)) null
+            else link.trim().substringAfter("://").substringBefore('?').substringBefore('/').lowercase()
+
+        /** True when a task link carries [flag]=1 (the built-in page's "go" and "save"). */
+        fun hasFlag(link: String, flag: String): Boolean =
+            link.substringAfter('?', "").split('&').any { it.equals("$flag=1", ignoreCase = true) }
+
         /** True for `arrowos://run?...` links. */
         fun isTaskLink(link: String): Boolean = link.trim().lowercase().startsWith("$SCHEME://$HOST")
 
@@ -115,7 +130,7 @@ data class ClonerPlan(val actions: List<ClonerAction>, val problems: List<Cloner
         /** What a task (or a taught skill) may do. */
         fun allowedInTask(command: Command): Boolean = when (command) {
             is Command.Ignored, Command.StopListening, Command.ClearPrevious, Command.Help,
-            Command.StartTeaching, is Command.StopTeaching, Command.ShowSkills, is Command.RunSkill,
+            Command.StartTeaching, is Command.StopTeaching, Command.ShowSkills, is Command.RunSkill, Command.OpenCloner,
             -> false
             else -> true
         }

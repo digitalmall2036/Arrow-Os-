@@ -33,6 +33,17 @@ class ArrowClonerTest {
         assertFalse(ClonerTask.isTaskLink("intent://run"))
     }
 
+    @Test fun builtInPageLinks() {
+        assertEquals("skills", ClonerTask.linkAction("arrowos://skills"))
+        assertEquals("teach", ClonerTask.linkAction("arrowos://teach"))
+        val go = ClonerTask("Cats", listOf("search cats")).toLink() + "&go=1"
+        assertEquals("run", ClonerTask.linkAction(go))
+        assertTrue(ClonerTask.hasFlag(go, "go"))
+        assertFalse(ClonerTask.hasFlag(go, "save"))
+        assertEquals(listOf("search cats"), ClonerTask.fromLink(go)?.steps)
+        assertNull(ClonerTask.linkAction("https://example.com"))
+    }
+
     @Test fun planRunsTapAndSearchAndWaits() {
         val plan = ClonerPlan.of(ClonerTask("x", listOf("tap open TikTok then search cats", "wait 3 seconds", "tap like this video")))
         assertTrue(plan.problems.isEmpty())
@@ -96,10 +107,13 @@ class ArrowClonerTest {
         assertEquals(Command.StopTeaching(null), CommandParser.parse("tap stop teaching"))
         assertEquals(Command.StopTeaching("morning post"), CommandParser.parse("tap save skill as Morning Post"))
         assertEquals(Command.StopTeaching("next week plan"), CommandParser.parse("tap save skill as next week plan"))
-        assertEquals(Command.ShowSkills, CommandParser.parse("tap arrow cloner"))
+        assertEquals(Command.OpenCloner, CommandParser.parse("tap arrow cloner"))
+        assertEquals(Command.OpenCloner, CommandParser.parse("tap open arrow cloner"))
+        assertEquals(Command.ShowSkills, CommandParser.parse("tap cloner skills"))
         assertEquals(Command.ShowSkills, CommandParser.parse("tap my skills"))
         assertEquals(Command.RunSkill("morning post", "do morning post"), CommandParser.parse("tap do morning post"))
         assertEquals(Command.RunSkill("cartoons", "run skill cartoons"), CommandParser.parse("tap run skill cartoons"))
+        assertEquals(Command.Tap("do it", listOf("do it")), CommandParser.parse("tap do it"))
         // Old commands keep working.
         assertEquals(Command.Pause, CommandParser.parse("tap stop"))
         assertTrue(CommandParser.parse("tap save") is Command.Tap)

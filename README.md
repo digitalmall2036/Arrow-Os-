@@ -80,7 +80,13 @@ One-time setup in Supabase: the Firebase third-party sign-in must be on, and the
 ## Arrow Cloner: work done for you through Arrow Os
 
 [Arrow Cloner](https://github.com/digitalmall2036/arrow-ai-cloner) is the assistant that does
-work through Arrow Os, using the same `tap` and `search` commands you use.
+work through Arrow Os, using the same `tap` and `search` commands you use. It is built in:
+the **Arrow Cloner** tile is always second on the home screen (or say "tap open arrow cloner").
+
+- **Tell it a job.** On the Arrow Cloner screen, type or just say the job in plain words
+  ("watch tom and jerry", "like the first 3 videos about cats on tiktok"). It plans the steps;
+  tap **Do it** (or say "tap do it") and it does them, or **Save as skill** to keep them.
+  The page lives in `app/src/main/assets/cloner/` (a copy of the Arrow Cloner repo's page).
 
 - **Teach it by showing it.** Say "tap teach arrow cloner", do the job with normal commands
   (tapping a home screen app counts too), then say "tap save skill as morning post".

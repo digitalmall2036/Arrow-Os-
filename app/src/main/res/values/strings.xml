@@ -143,6 +143,8 @@
     <string name="signout">Sign out</string>
 
     <!-- Arrow Cloner -->
+    <string name="cloner_app">Arrow Cloner</string>
+    <string name="cloner_planning">Arrow Cloner is planning: “%1$s”. Say \"tap do it\" to start.</string>
     <string name="cloner_title">Arrow Cloner skills</string>
     <string name="cloner_empty">Arrow Cloner hasn\'t learned anything yet. Say \"tap teach arrow cloner\", do the work with tap and search, then say \"tap save skill as\" and a name.</string>
     <string name="cloner_teach_now">Teach now</string>

@@ -61,6 +61,8 @@ sealed class Command {
     data object StartTeaching : Command()
     /** Stop watching and save the skill, under [name] when the user said one. */
     data class StopTeaching(val name: String?) : Command()
+    /** Open the Arrow Cloner app inside Arrow Os. */
+    data object OpenCloner : Command()
     /** List the skills Arrow Cloner knows. */
     data object ShowSkills : Command()
     /** Repeat a skill by its name ("tap do morning post"). [spoken] is everything after "tap". */
@@ -278,8 +280,10 @@ object CommandParser {
         "start recording", "record" -> Command.StartTeaching
         "stop teaching", "done teaching", "finish teaching", "end teaching", "stop recording", "save skill",
         "save the skill", "save this skill" -> Command.StopTeaching(null)
-        "arrow cloner", "cloner", "skills", "my skills", "cloner skills", "arrow cloner skills", "show skills",
-        "show my skills", "open skills", "open arrow cloner", "open cloner" -> Command.ShowSkills
+        "arrow cloner", "cloner", "open arrow cloner", "open cloner", "go to arrow cloner", "go to cloner",
+        "launch arrow cloner", "start arrow cloner", "arrow cloner app" -> Command.OpenCloner
+        "skills", "my skills", "cloner skills", "arrow cloner skills", "show skills",
+        "show my skills", "open skills" -> Command.ShowSkills
         "help", "commands", "show commands" -> Command.Help
         // "tap previous" opens the Previous list. "tap previous video" still moves the feed back.
         "previous", "previous tab", "previous tabs", "previous taps", "previous pages", "previous sites",
@@ -317,7 +321,8 @@ object CommandParser {
     private fun parseRunSkill(text: String): Command? {
         Regex("^(?:do|run|repeat|clone) (?:the )?(?:skill |cloner skill )?(.+?)(?: skill)?$").find(text)?.let { m ->
             val name = m.groupValues[1].trim()
-            if (name.isNotEmpty()) return Command.RunSkill(name, text)
+            // "tap do it" taps the "Do it" button (Arrow Cloner's app); it isn't a skill name.
+            if (name.isNotEmpty() && name !in setOf("it", "this", "that", "it now", "this now")) return Command.RunSkill(name, text)
         }
         return null
     }
