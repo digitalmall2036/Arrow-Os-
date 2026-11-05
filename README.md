@@ -77,6 +77,30 @@ listed straight away and downloaded when opened.
 One-time setup in Supabase: the Firebase third-party sign-in must be on, and the rules in
 [`supabase-storage.sql`](supabase-storage.sql) must be run once in the SQL Editor.
 
+## Arrow Cloner: work done for you through Arrow Os
+
+[Arrow Cloner](https://github.com/digitalmall2036/arrow-ai-cloner) is the assistant that does
+work through Arrow Os, using the same `tap` and `search` commands you use. It is built in:
+the **Arrow Cloner** tile is always second on the home screen (or say "tap open arrow cloner").
+
+- **Tell it a job.** On the Arrow Cloner screen, type or just say the job in plain words
+  ("watch tom and jerry", "like the first 3 videos about cats on tiktok"). It plans the steps;
+  tap **Do it** (or say "tap do it") and it does them, or **Save as skill** to keep them.
+  The page lives in `app/src/main/assets/cloner/` (a copy of the Arrow Cloner repo's page).
+
+- **Teach it by showing it.** Say "tap teach arrow cloner", do the job with normal commands
+  (tapping a home screen app counts too), then say "tap save skill as morning post".
+  Later, "tap do morning post" repeats the whole job, and "tap cloner skills" lists every skill.
+- **Hand it a task.** The Arrow Cloner page turns a job in plain words into steps and a link
+  `arrowos://run?name=...&steps=...`. Opening the link (in the phone's browser, or tapped on a
+  page inside Arrow Os) shows every step first, then runs them when you tap **Run**, or saves
+  them as a skill. Any new command stops a running task.
+- A task may not stop the mic, clear history or change Arrow Cloner itself. Up to 60 steps,
+  and `wait 5` gives a slow page time.
+
+The code is in `ArrowCloner.kt`; the manual that teaches Arrow Cloner the commands is
+`ARROW_OS.md` in the Arrow Cloner repo.
+
 ## Install the APK (from your phone)
 
 **Easiest: the "latest" release**

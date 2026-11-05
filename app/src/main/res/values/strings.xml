@@ -141,4 +141,33 @@
     <string name="signout_title">Sign out?</string>
     <string name="signout_message">Your files stay safe in your account. You will also be signed out of every website inside Arrow Os, so the next person can\'t use your accounts.</string>
     <string name="signout">Sign out</string>
+
+    <!-- Arrow Cloner -->
+    <string name="cloner_app">Arrow Cloner</string>
+    <string name="cloner_planning">Arrow Cloner is planning: “%1$s”. Say \"tap do it\" to start.</string>
+    <string name="cloner_title">Arrow Cloner skills</string>
+    <string name="cloner_empty">Arrow Cloner hasn\'t learned anything yet. Say \"tap teach arrow cloner\", do the work with tap and search, then say \"tap save skill as\" and a name.</string>
+    <string name="cloner_teach_now">Teach now</string>
+    <string name="cloner_teach_new">Teach a new one</string>
+    <string name="cloner_delete">Delete…</string>
+    <string name="cloner_delete_title">Delete which skill?</string>
+    <string name="cloner_deleted">Deleted %1$s</string>
+    <string name="say_cloner_teaching">Arrow Cloner is watching. Do the work, then say tap save skill as, and a name.</string>
+    <string name="cloner_watching">Arrow Cloner is watching: every tap and search is being learned</string>
+    <string name="cloner_learned">Learned step %1$d: “%2$s”</string>
+    <string name="cloner_not_teaching">Arrow Cloner isn\'t learning right now. Say \"tap teach arrow cloner\" first.</string>
+    <string name="cloner_nothing_learned">Nothing to save: Arrow Cloner didn\'t see any tap or search</string>
+    <string name="cloner_name_title">Name this skill</string>
+    <string name="cloner_name_hint">For example: morning post</string>
+    <string name="cloner_save">Save</string>
+    <string name="cloner_forgot">Skill not saved</string>
+    <string name="say_cloner_saved">Arrow Cloner learned %1$s</string>
+    <string name="cloner_run_title">Arrow Cloner wants to do: %1$s</string>
+    <string name="cloner_skipped">These steps will be skipped:</string>
+    <string name="cloner_run">Run</string>
+    <string name="cloner_keep">Save as skill</string>
+    <string name="cloner_no_steps">%1$s has no steps Arrow Os can run</string>
+    <string name="say_cloner_running">Arrow Cloner is doing %1$s</string>
+    <string name="cloner_step">Arrow Cloner · step %1$d of %2$d: %3$s</string>
+    <string name="cloner_done">Arrow Cloner finished %1$s</string>
 </resources>

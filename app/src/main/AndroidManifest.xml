@@ -36,6 +36,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Arrow Cloner hands work to Arrow Os with arrowos://run?name=...&steps=... links. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="arrowos" android:host="run" />
+            </intent-filter>
         </activity>
 
         <!-- Don't send Google usage reports about the pages opened inside Arrow Os. -->
