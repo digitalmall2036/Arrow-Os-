@@ -177,6 +177,13 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     /** For housekeeping (saving Previous, closing windows) that a new voice command must not cancel. */
     private val housekeeping = Handler(Looper.getMainLooper())
 
+    /** Arrow Cloner: the skills it was taught (per account), and what it is watching right now. */
+    private var clonerSkills = ClonerSkills()
+    private val clonerRecorder = ClonerRecorder()
+
+    /** A task handed over before the user was signed in; it is offered once they are. */
+    private var pendingClonerTask: ClonerTask? = null
+
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
 
@@ -214,9 +221,21 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         watchNetwork()
         moveFilesInsideArrowOs()
 
+        pendingClonerTask = taskFrom(intent)
         val uid = cloud.uid
         if (uid != null) beginSession(uid) else showSignIn()
     }
+
+    /** An Arrow Cloner link opened while Arrow Os is already running. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val task = taskFrom(intent) ?: return
+        if (accountUid != null) askToRunClonerTask(task) else pendingClonerTask = task
+    }
+
+    private fun taskFrom(intent: Intent?): ClonerTask? =
+        intent?.dataString?.let { ClonerTask.fromLink(it) }
 
     override fun onResume() {
         super.onResume()
@@ -320,7 +339,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         tile.appLabel.maxLines = 2
         tile.appLabel.gravity = Gravity.CENTER
         tile.root.contentDescription = getString(R.string.open_app, tool.label)
-        tile.root.setOnClickListener { openTool(tool) }
+        tile.root.setOnClickListener {
+            clonerRecorder.record("tap open ${tool.label}")
+            openTool(tool)
+        }
         grid.addView(tile.root)
     }
 
@@ -677,6 +699,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     /** Keeps every link inside Arrow Os. Returns true when the WebView should NOT load [url] itself. */
     private fun handleUrl(view: WebView, url: String): Boolean {
+        // "Run in Arrow Os" on the Arrow Cloner page (or any site): hand the task to Arrow Cloner.
+        if (ClonerTask.isTaskLink(url)) {
+            ClonerTask.fromLink(url)?.let { askToRunClonerTask(it) } ?: toast("That Arrow Cloner link has no steps")
+            return true
+        }
         if (url.startsWith("http://") || url.startsWith("https://")) {
             // WhatsApp Web only opens for a computer browser; switch the browser name to match.
             val wantDesktop = SitePolicy.needsDesktopSite(url)
@@ -1566,6 +1593,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         // Back where the user left off, still signed in to the site.
         if (homeSetup != null) restoreOpenPage()
         if (!userMuted) ensureMicPermissionThenListen(userAsked = false)
+        clonerSkills = ClonerSkills.decode(prefs.getString(clonerPrefKey(), null))
+        pendingClonerTask?.let { task ->
+            pendingClonerTask = null
+            askToRunClonerTask(task)
+        }
     }
 
     /**
@@ -1621,6 +1653,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         filesUser = ArrowFilesIndex.LOCAL_USER
         files = ArrowFilesIndex()
         homeSetup = null
+        clonerSkills = ClonerSkills()
+        clonerRecorder.cancel()
         designerShown = emptyList()
         designerTicked.clear()
         currentApp = null
@@ -2010,6 +2044,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
         binding.voiceStatus.text = "“$text”"
         handler.removeCallbacksAndMessages(null) // a new instruction replaces an unfinished sequence
+        if (clonerRecorder.record(text)) {
+            binding.voiceStatus.text = getString(R.string.cloner_learned, clonerRecorder.recorded.size, text.trim())
+        }
         runSequence(commands, 0)
     }
 
@@ -2208,8 +2245,170 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             is Command.ScrollToNth -> inPage {
                 web.scrollToNth(command.n) { ok -> toast(if (ok) "Number ${command.n}" else "Couldn't find item ${command.n}") }
             }
+            Command.StartTeaching -> startTeaching()
+            is Command.StopTeaching -> stopTeaching(command.name)
+            Command.ShowSkills -> showClonerSkills()
+            is Command.RunSkill -> {
+                val skill = clonerSkills.find(command.name)
+                if (skill != null) {
+                    runClonerTask(skill)
+                } else {
+                    // Not a skill: it may be a button called "Run code" or "Do it now".
+                    perform(Command.Tap(command.spoken, TapVocabulary.labelsFor(command.spoken)))
+                }
+            }
             is Command.Ignored -> Unit
         }
+    }
+
+    // ---------- Arrow Cloner ----------
+
+    private fun clonerPrefKey() = "cloner_skills_${accountUid ?: ArrowFilesIndex.LOCAL_USER}"
+
+    private fun saveClonerSkills() {
+        prefs.edit().putString(clonerPrefKey(), clonerSkills.encode()).apply()
+    }
+
+    private fun startTeaching() {
+        clonerRecorder.start()
+        confirm(getString(R.string.say_cloner_teaching))
+        binding.voiceStatus.text = getString(R.string.cloner_watching)
+    }
+
+    private fun stopTeaching(name: String?) {
+        if (!clonerRecorder.isRecording) {
+            toast(getString(R.string.cloner_not_teaching))
+            return
+        }
+        val steps = clonerRecorder.stop()
+        if (steps.isEmpty()) {
+            toast(getString(R.string.cloner_nothing_learned))
+            return
+        }
+        if (!name.isNullOrBlank()) {
+            saveClonerSkill(ClonerTask(name.trim(), steps))
+            return
+        }
+        // No name said: ask for one.
+        val input = android.widget.EditText(this).apply {
+            hint = getString(R.string.cloner_name_hint)
+            setSingleLine()
+        }
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = FrameLayout(this).apply {
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.cloner_name_title)
+            .setMessage(steps.joinToString("\n") { "• $it" })
+            .setView(box)
+            .setPositiveButton(R.string.cloner_save) { _, _ ->
+                val typed = input.text.toString().trim().ifEmpty { "Skill ${clonerSkills.size + 1}" }
+                saveClonerSkill(ClonerTask(typed, steps))
+            }
+            .setNegativeButton(android.R.string.cancel) { _, _ -> toast(getString(R.string.cloner_forgot)) }
+            .show()
+    }
+
+    private fun saveClonerSkill(task: ClonerTask) {
+        clonerSkills.save(task)
+        saveClonerSkills()
+        confirm(getString(R.string.say_cloner_saved, task.name))
+    }
+
+    /** The skills Arrow Cloner knows: tap one to run it. */
+    private fun showClonerSkills() {
+        if (clonerSkills.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.cloner_title)
+                .setMessage(R.string.cloner_empty)
+                .setPositiveButton(R.string.cloner_teach_now) { _, _ -> startTeaching() }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+            return
+        }
+        val skills = clonerSkills.all
+        val rows = skills.map { "${it.name}  (${it.steps.size} steps)" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.cloner_title)
+            .setItems(rows) { _, i -> runClonerTask(skills[i]) }
+            .setPositiveButton(R.string.cloner_teach_new) { _, _ -> startTeaching() }
+            .setNeutralButton(R.string.cloner_delete) { _, _ -> askToDeleteClonerSkill() }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun askToDeleteClonerSkill() {
+        val skills = clonerSkills.all
+        AlertDialog.Builder(this)
+            .setTitle(R.string.cloner_delete_title)
+            .setItems(skills.map { it.name }.toTypedArray()) { _, i ->
+                clonerSkills.remove(skills[i].name)
+                saveClonerSkills()
+                toast(getString(R.string.cloner_deleted, skills[i].name))
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    /**
+     * A task handed over by a link. A link can come from any website, so Arrow Os always
+     * shows the steps and runs them only when the user says so.
+     */
+    private fun askToRunClonerTask(task: ClonerTask) {
+        if (binding.designerScreen.isVisible || binding.signInScreen.isVisible) {
+            pendingClonerTask = task
+            return
+        }
+        val plan = ClonerPlan.of(task)
+        val message = buildString {
+            task.steps.forEachIndexed { i, step -> append("${i + 1}. $step\n") }
+            if (plan.problems.isNotEmpty()) {
+                append("\n").append(getString(R.string.cloner_skipped)).append("\n")
+                plan.problems.forEach { append("• ${it.line}: ${it.reason}\n") }
+            }
+        }.trim()
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.cloner_run_title, task.name))
+            .setMessage(message)
+            .setNegativeButton(android.R.string.cancel, null)
+        if (plan.canRun) {
+            dialog.setPositiveButton(R.string.cloner_run) { _, _ -> runClonerTask(task) }
+            dialog.setNeutralButton(R.string.cloner_keep) { _, _ -> saveClonerSkill(task) }
+        }
+        dialog.show()
+    }
+
+    /** Arrow Cloner at work: each step runs like a spoken command, one after another. */
+    private fun runClonerTask(task: ClonerTask) {
+        val plan = ClonerPlan.of(task)
+        if (!plan.canRun) {
+            toast(getString(R.string.cloner_no_steps, task.name))
+            return
+        }
+        handler.removeCallbacksAndMessages(null)
+        confirm(getString(R.string.say_cloner_running, task.name))
+        runClonerAction(task.name, plan.actions, 0)
+    }
+
+    private fun runClonerAction(name: String, actions: List<ClonerAction>, index: Int) {
+        val action = actions.getOrNull(index)
+        if (action == null) {
+            binding.voiceStatus.text = getString(R.string.cloner_done, name)
+            toast(getString(R.string.cloner_done, name))
+            return
+        }
+        binding.voiceStatus.text = getString(R.string.cloner_step, index + 1, actions.size, action.line)
+        val delay = when (action) {
+            is ClonerAction.Wait -> action.seconds * 1000L
+            is ClonerAction.Do -> {
+                perform(action.command)
+                // Pages on small phones and slow data need a moment longer than a person's chain.
+                if (action.command.loadsPage()) 4000L else 1200L
+            }
+        }
+        handler.postDelayed({ runClonerAction(name, actions, index + 1) }, delay)
     }
 
     /** Runs [action] only when an app is open; on the home screen, explains what to do. */
@@ -2243,6 +2442,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 tap stop listening
 
                 Chain them: tap open TikTok then search cats
+
+                ARROW CLONER learns your work and repeats it:
+                tap teach arrow cloner (then do the work with tap and search)
+                tap save skill as morning post
+                tap do morning post · tap cloner skills
 
                 Anything that doesn't start with tap or search is ignored.
                 """.trimIndent(),

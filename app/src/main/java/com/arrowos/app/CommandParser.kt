@@ -56,6 +56,16 @@ sealed class Command {
     data object Help : Command()
     data object StopListening : Command()
 
+    // Arrow Cloner: the assistant that does work through Arrow Os
+    /** Start watching: every command from now on is part of a new skill. */
+    data object StartTeaching : Command()
+    /** Stop watching and save the skill, under [name] when the user said one. */
+    data class StopTeaching(val name: String?) : Command()
+    /** List the skills Arrow Cloner knows. */
+    data object ShowSkills : Command()
+    /** Repeat a skill by its name ("tap do morning post"). [spoken] is everything after "tap". */
+    data class RunSkill(val name: String, val spoken: String) : Command()
+
     /** Didn't start with "tap" or "search", so Arrow Os does nothing. */
     data class Ignored(val heard: String) : Command()
 }
@@ -239,6 +249,7 @@ object CommandParser {
     private fun knownAction(raw: String): Command? {
         val text = raw.removePrefix("the ").trim()
         exactAction(text)?.let { return it }
+        parseSaveSkill(text)?.let { return it }
         parseTyping(text)?.let { return it }
         parseScrollToNth(text)?.let { return it }
         parseNth(text)?.let { return it }
@@ -247,6 +258,7 @@ object CommandParser {
             return Command.Tap(labels.first(), labels)
         }
         parseOpenApp(text)?.let { return it }
+        parseRunSkill(text)?.let { return it }
         // "tap click subscribe", "tap press next": the extra verb is fine.
         Regex("^(?:click|press|select|hit|choose|pick)(?: on)? (.+)$").find(text)?.let { m ->
             return knownAction(m.groupValues[1]) ?: tapByName(m.groupValues[1])
@@ -261,6 +273,13 @@ object CommandParser {
         "go back home", "close", "close app", "close it", "close this", "exit", "exit app" -> Command.Home
         "reload", "refresh", "reload page", "refresh page", "reload it", "refresh it" -> Command.Reload
         "stop listening", "mic off", "turn off mic", "turn off the mic", "voice off" -> Command.StopListening
+        "teach arrow cloner", "teach cloner", "teach arrow", "start teaching", "teach", "teach a skill",
+        "teach arrow cloner a skill", "teach cloner a skill", "new skill", "learn this", "watch me",
+        "start recording", "record" -> Command.StartTeaching
+        "stop teaching", "done teaching", "finish teaching", "end teaching", "stop recording", "save skill",
+        "save the skill", "save this skill" -> Command.StopTeaching(null)
+        "arrow cloner", "cloner", "skills", "my skills", "cloner skills", "arrow cloner skills", "show skills",
+        "show my skills", "open skills", "open arrow cloner", "open cloner" -> Command.ShowSkills
         "help", "commands", "show commands" -> Command.Help
         // "tap previous" opens the Previous list. "tap previous video" still moves the feed back.
         "previous", "previous tab", "previous tabs", "previous taps", "previous pages", "previous sites",
@@ -285,6 +304,22 @@ object CommandParser {
         "zoom out" -> Command.ZoomOut
         "enter", "press enter", "submit", "send", "search button" -> Command.PressEnter
         else -> null
+    }
+
+    /**
+     * "save skill as morning post" names the skill being taught;
+     * "do morning post" / "run skill morning post" repeats one.
+     */
+    private fun parseSaveSkill(text: String): Command? =
+        Regex("^(?:stop teaching|done teaching|finish teaching|stop recording|save skill|save the skill|save this skill|save it)(?: and save it)? (?:as|called|named) (.+)$")
+            .find(text)?.let { Command.StopTeaching(it.groupValues[1].trim()) }
+
+    private fun parseRunSkill(text: String): Command? {
+        Regex("^(?:do|run|repeat|clone) (?:the )?(?:skill |cloner skill )?(.+?)(?: skill)?$").find(text)?.let { m ->
+            val name = m.groupValues[1].trim()
+            if (name.isNotEmpty()) return Command.RunSkill(name, text)
+        }
+        return null
     }
 
     /** "type happy birthday and send" / "write hello". */
