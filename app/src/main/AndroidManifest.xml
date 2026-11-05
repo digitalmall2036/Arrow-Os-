@@ -4,12 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <!-- Only for "Save to phone" on Android 9 and older; newer phones need no permission. -->
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-    <!-- Lets an APK saved in Arrow Files (for example from 9apps) be installed when opened. -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- No storage permissions: Arrow Os keeps everything in its own private space, apart from the phone. -->
 
     <!-- Android 11+ package visibility: lets us find the phone's speech and TTS engines. -->
     <queries>
@@ -22,7 +17,8 @@
     </queries>
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
@@ -42,7 +38,12 @@
             </intent-filter>
         </activity>
 
-        <!-- Hands a file from Arrow Files to another app when the user taps Open or Share. -->
+        <!-- Don't send Google usage reports about the pages opened inside Arrow Os. -->
+        <meta-data
+            android:name="android.webkit.WebView.MetricsOptOut"
+            android:value="true" />
+
+        <!-- Hands a file from Arrow Files to a website when the user posts it (the site's file box). -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

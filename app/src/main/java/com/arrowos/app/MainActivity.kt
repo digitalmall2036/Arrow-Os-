@@ -3,9 +3,7 @@ package com.arrowos.app
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.DownloadManager
-import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -16,10 +14,8 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.provider.MediaStore
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.text.format.DateUtils
@@ -37,7 +33,9 @@ import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -53,6 +51,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.isVisible
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import com.arrowos.app.databinding.ActivityMainBinding
 import com.arrowos.app.databinding.ItemAppTileBinding
 import com.arrowos.app.databinding.ItemArrowFileBinding
@@ -93,6 +94,40 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private lateinit var web: WebActions
 
+    /** The page view. A fresh one replaces it if the phone stops the page to free memory. */
+    private lateinit var webView: WebView
+
+    /** The browser names Arrow Os uses: Chrome on a phone, and Chrome on a computer for sites that need it. */
+    private lateinit var mobileUserAgent: String
+    private lateinit var desktopUserAgent: String
+
+    /** The page's address, readable from the background threads that load page parts. */
+    @Volatile private var pageUrlForBlocking: String? = null
+
+    /** 2 GB phones and smaller: keep only one page in memory and let it go when leaving it. */
+    private val lowRam by lazy {
+        val am = getSystemService(android.app.ActivityManager::class.java)
+        val info = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        am.isLowRamDevice || info.totalMem < 3L * 1024 * 1024 * 1024
+    }
+
+    /** The address the user last opened (a home screen app, a search...), to recognise it when it is asleep. */
+    private var lastRequestedUrl: String? = null
+
+    /** A sign-in window a site opened ("Sign in with Google"), shown on top of the page. */
+    private var popupView: WebView? = null
+
+    /** Downloads straight into Arrow Os's private folder; nothing goes to the phone's Downloads. */
+    private val downloader = ArrowDownloader()
+    private val blobSaver = BlobSaver()
+    private val downloadProgress = mutableMapOf<String, Pair<Long, Long>>()
+
+    /** Opens Arrow Files inside Arrow Os. */
+    private lateinit var viewer: FileViewer
+
+    /** Reloads the page when the internet comes back. */
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
     /** "Previous": every tab ever opened in Arrow Os, saved across launches. */
     private lateinit var previous: TabHistory
     private val prefs by lazy { getSharedPreferences("arrow_os", MODE_PRIVATE) }
@@ -119,15 +154,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private var filesSource: String? = null
     private var filesShowTrash = false
 
-    /** "Save to phone" waiting for the storage permission (Android 9 and older only). */
-    private var pendingSaveToPhone: ArrowFile? = null
-    private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val file = pendingSaveToPhone
-        pendingSaveToPhone = null
-        if (granted && file != null) saveToPhone(file) else if (file != null) toast(getString(R.string.files_save_failed))
-    }
-
-    /** The phone tells us when a download finishes; the file is then ready in Arrow Files. */
+    /** Downloads started by older versions of Arrow Os through the phone's download manager. */
     private val downloadDone = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
@@ -147,6 +174,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private var errorPageUrl: String? = null
     private val handler = Handler(Looper.getMainLooper())
 
+    /** For housekeeping (saving Previous, closing windows) that a new voice command must not cancel. */
+    private val housekeeping = Handler(Looper.getMainLooper())
+
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
 
@@ -162,7 +192,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         setContentView(binding.root)
 
         voice = VoiceController(this, this)
-        web = WebActions(binding.webView)
+        webView = binding.webView
+        mobileUserAgent = SitePolicy.chromeUserAgent(WebSettings.getDefaultUserAgent(this))
+        desktopUserAgent = SitePolicy.desktopUserAgent(mobileUserAgent)
+        web = WebActions(webView)
+        viewer = FileViewer(this, binding.viewerBody)
         previous = TabHistory.decode(prefs.getString(PREF_PREVIOUS, null))
         files = ArrowFilesIndex() // filled in once the user is signed in
         ContextCompat.registerReceiver(
@@ -177,6 +211,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         setupVoiceBar()
         setupBackHandling()
         setupTts()
+        watchNetwork()
+        moveFilesInsideArrowOs()
 
         val uid = cloud.uid
         if (uid != null) beginSession(uid) else showSignIn()
@@ -184,24 +220,56 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     override fun onResume() {
         super.onResume()
-        binding.webView.onResume()
+        if (binding.browserScreen.isVisible) webView.onResume()
+        webView.resumeTimers()
+        if (accountUid != null) updateGoogleCard()
         if (!userMuted && accountUid != null) ensureMicPermissionThenListen(userAsked = false)
     }
 
     override fun onPause() {
         // Always-listening only while Arrow Os is on screen.
         voice.stop()
-        binding.webView.onPause()
+        webView.onPause()
+        // Sign-ins are written to Arrow Os's storage now, so they survive the phone closing the app.
+        CookieManager.getInstance().flush()
+        rememberOpenPage()
+        flushPrevious()
         super.onPause()
+    }
+
+    override fun onStop() {
+        // Nothing runs in the background while Arrow Os is out of sight (saves battery and memory).
+        if (!isChangingConfigurations) webView.pauseTimers()
+        super.onStop()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // The phone is short of memory: let go of a page that isn't on screen.
+        @Suppress("DEPRECATION")
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && !binding.browserScreen.isVisible) {
+            releaseHiddenPage()
+        }
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        flushPrevious()
         unregisterReceiver(downloadDone)
+        networkCallback?.let {
+            try {
+                getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(it)
+            } catch (e: Exception) {
+                // already gone
+            }
+        }
+        downloader.shutdown()
+        viewer.close()
+        closePopup()
         cloudWorker.shutdown()
         voice.destroy()
         tts?.shutdown()
-        binding.webView.destroy()
+        webView.destroy()
         super.onDestroy()
     }
 
@@ -211,17 +279,19 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         binding.homePrevious.setOnClickListener { showPrevious() }
         binding.homeChangeBusiness.setOnClickListener { showDesigner() }
         binding.homeAccount.setOnClickListener { askToSignOut() }
+        binding.homeGoogle.setOnClickListener { openGoogleAccount() }
         renderHomeApps()
     }
 
-    /** The home screen shows exactly the apps the user ticked in the Auto Designer. */
+    /**
+     * The home screen: Arrow Files and the essentials (Gmail, WhatsApp, YouTube...) for everyone,
+     * then the business apps the user ticked in the Auto Designer.
+     */
     private fun renderHomeApps() {
-        binding.appGrid.removeAllViews()
-        val setup = homeSetup
-        val tools = setup?.tools.orEmpty()
         val inflater = LayoutInflater.from(this)
+        binding.essentialsGrid.removeAllViews()
         // Arrow Files is always the first app, whatever business the user picked.
-        val filesTile = ItemAppTileBinding.inflate(inflater, binding.appGrid, false)
+        val filesTile = ItemAppTileBinding.inflate(inflater, binding.essentialsGrid, false)
         filesTile.appIcon.text = ""
         filesTile.appIcon.setCompoundDrawablesWithIntrinsicBounds(0, R.drawable.ic_folder, 0, 0)
         filesTile.appIcon.setPadding(0, (20 * resources.displayMetrics.density).toInt(), 0, 0)
@@ -229,22 +299,34 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         filesTile.appLabel.text = getString(R.string.files_title)
         filesTile.root.contentDescription = getString(R.string.open_app, getString(R.string.files_title))
         filesTile.root.setOnClickListener { showFiles() }
-        binding.appGrid.addView(filesTile.root)
-        tools.forEach { tool ->
-            val tile = ItemAppTileBinding.inflate(inflater, binding.appGrid, false)
-            tile.appIcon.text = tool.initial
-            tile.appIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(tool.colorHex))
-            tile.appLabel.text = tool.label
-            tile.appLabel.maxLines = 2
-            tile.appLabel.gravity = Gravity.CENTER
-            tile.root.contentDescription = getString(R.string.open_app, tool.label)
-            tile.root.setOnClickListener { openTool(tool) }
-            binding.appGrid.addView(tile.root)
-        }
+        binding.essentialsGrid.addView(filesTile.root)
+        AutoDesigner.essentials.forEach { addHomeTile(binding.essentialsGrid, it, inflater) }
+
+        binding.appGrid.removeAllViews()
+        val setup = homeSetup
+        val tools = setup?.businessTools.orEmpty()
+        tools.forEach { addHomeTile(binding.appGrid, it, inflater) }
+        binding.homeBusinessTitle.isVisible = tools.isNotEmpty()
         binding.homeEmpty.isVisible = tools.isEmpty()
         binding.homeBusiness.isVisible = setup != null && setup.category.isNotBlank()
         binding.homeBusiness.text = getString(R.string.home_business, setup?.category.orEmpty())
     }
+
+    private fun addHomeTile(grid: android.widget.GridLayout, tool: BusinessTool, inflater: LayoutInflater) {
+        val tile = ItemAppTileBinding.inflate(inflater, grid, false)
+        tile.appIcon.text = tool.initial
+        tile.appIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(tool.colorHex))
+        tile.appLabel.text = tool.label
+        tile.appLabel.maxLines = 2
+        tile.appLabel.gravity = Gravity.CENTER
+        tile.root.contentDescription = getString(R.string.open_app, tool.label)
+        tile.root.setOnClickListener { openTool(tool) }
+        grid.addView(tile.root)
+    }
+
+    /** The home screen app the user named ("tap open Gmail"), essentials included. */
+    private fun findHomeTool(spoken: String): BusinessTool? =
+        homeSetup?.findTool(spoken) ?: AutoDesigner.findTool(AutoDesigner.essentials, spoken)
 
     /** Opens a home screen app straight away, inside Arrow Os. */
     private fun openTool(tool: BusinessTool) {
@@ -252,60 +334,179 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         if (app != null) openApp(app, tool.url) else openWebsite(tool.url, tool.label)
     }
 
+    /**
+     * One account for all of Arrow Os: the user signs in to Google once inside Arrow Os (a new
+     * account just for Arrow Os, if they like). Gmail, YouTube, Drive and every "Sign in with
+     * Google" button then use it. It lives in Arrow Os's own storage, apart from the phone's accounts.
+     */
+    private fun updateGoogleCard() {
+        val signedIn = SitePolicy.signedInToGoogle(CookieManager.getInstance().getCookie("https://accounts.google.com")) ||
+            SitePolicy.signedInToGoogle(CookieManager.getInstance().getCookie("https://www.google.com"))
+        binding.homeGoogle.text = getString(if (signedIn) R.string.google_signed_in else R.string.google_signed_out)
+        binding.homeGoogle.tag = signedIn
+    }
+
+    private fun openGoogleAccount() {
+        if (binding.homeGoogle.tag == true) {
+            openWebsite("https://myaccount.google.com/", "Google Account")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.google_choice_title)
+            .setMessage(R.string.google_choice_message)
+            .setPositiveButton(R.string.google_sign_in) { _, _ ->
+                openWebsite("https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmail.google.com%2Fmail%2F", "Google")
+            }
+            .setNeutralButton(R.string.google_create) { _, _ ->
+                openWebsite("https://accounts.google.com/signup?continue=https%3A%2F%2Fmail.google.com%2Fmail%2F", "Google")
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun showHome() {
         hidePrevious()
         hideFiles()
+        closeViewer()
+        closePopup()
         if (homeSetup == null) showDesigner()
-        currentApp = null
         binding.homeScreen.isVisible = true
         binding.browserScreen.isVisible = false
         pendingAlternatives.clear()
-        binding.webView.stopLoading()
+        updateGoogleCard()
+        if (lowRam) {
+            releaseHiddenPage()
+        } else {
+            // Bigger phones keep the page asleep, so going back to it is instant.
+            web.pause { }
+            webView.onPause()
+        }
+    }
+
+    /** Frees the page's memory (2 GB phones, or when the phone runs short). */
+    private fun releaseHiddenPage() {
+        currentApp = null
+        pageUrlForBlocking = null
+        lastRequestedUrl = null
+        errorPageUrl = null
+        webView.stopLoading()
         resetHistoryOnNextPage = true
-        binding.webView.loadUrl("about:blank")
+        webView.loadUrl("about:blank")
+    }
+
+    /** The page that is asleep behind the home screen, if it is [url] (or the same app's home). */
+    private fun isAsleep(url: String, app: ArrowApp?): Boolean {
+        val current = webView.url ?: return false
+        if (current == "about:blank" || errorPageUrl != null) return false
+        if (current == url || url == lastRequestedUrl) return true
+        return app != null && currentApp == app && url == app.homeUrl && ArrowApp.fromUrl(current) == app
     }
 
     // ---------- In-app browser ----------
 
-    @SuppressLint("SetJavaScriptEnabled")
     private fun setupBrowser() {
         CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(binding.webView, true)
+        configureWebView(webView)
+        binding.browserBack.setOnClickListener { goBack() }
+        binding.browserHome.setOnClickListener { showHome() }
+        binding.browserReload.setOnClickListener { reloadPage() }
+        binding.browserPrevious.setOnClickListener { showPrevious() }
+        binding.browserFiles.setOnClickListener { showFiles() }
+        binding.popupClose.setOnClickListener { closePopup() }
+        binding.viewerClose.setOnClickListener { closeViewer() }
+    }
 
-        binding.webView.settings.apply {
+    /** Settings every page view shares: the main one, a fresh replacement, and sign-in windows. */
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun applySettings(view: WebView) {
+        CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
+        view.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            @Suppress("DEPRECATION")
             databaseEnabled = true
             mediaPlaybackRequiresUserGesture = false
             loadWithOverviewMode = true
             useWideViewPort = true
             builtInZoomControls = true
             displayZoomControls = false
-            cacheMode = WebSettings.LOAD_DEFAULT
-            setSupportMultipleWindows(false)
-            // Look like Chrome rather than an embedded WebView. With the WebView marker
-            // ("; wv"), Instagram and Facebook hide features and push "Open the app".
-            userAgentString = userAgentString
-                .replace("; wv", "")
-                .replace(Regex("Version/\\d+(\\.\\d+)* "), "")
+            cacheMode = if (isOnline()) WebSettings.LOAD_DEFAULT else WebSettings.LOAD_CACHE_ELSE_NETWORK
+            // Sign-in windows ("Sign in with Google") open on top of the page instead of breaking.
+            setSupportMultipleWindows(true)
+            javaScriptCanOpenWindowsAutomatically = true
+            // Look like Chrome rather than an embedded WebView. With the WebView marks, Instagram
+            // and Facebook hide features, Google refuses sign-in and some sites can't "verify the browser".
+            userAgentString = mobileUserAgent
         }
+        hideWebViewMarks(view)
+        // The page on screen keeps its priority, so the phone frees other memory first.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            view.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
+        }
+    }
 
-        // Files (for example APKs from 9apps) download with Android's download manager.
-        binding.webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+    /**
+     * WebView tells every site "I am the app com.arrowos.app" (the X-Requested-With header) and
+     * "I am Android WebView" (the browser hints). Google sign-in and Cloudflare's "verify your
+     * browser" check refuse such browsers. Newer WebViews let Arrow Os leave both out.
+     */
+    private fun hideWebViewMarks(view: WebView) {
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+                WebSettingsCompat.setRequestedWithHeaderOriginAllowList(view.settings, emptySet())
+            }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+                val major = SitePolicy.chromeMajorVersion(mobileUserAgent)
+                val full = Regex("Chrome/([0-9.]+)").find(mobileUserAgent)?.groupValues?.get(1) ?: "$major.0.0.0"
+                fun brand(name: String, version: String, fullVersion: String) =
+                    UserAgentMetadata.BrandVersion.Builder().setBrand(name).setMajorVersion(version).setFullVersion(fullVersion).build()
+                val brands = listOf(
+                    brand("Chromium", major, full),
+                    brand("Google Chrome", major, full),
+                    brand("Not?A_Brand", "99", "99.0.0.0"),
+                )
+                val metadata = UserAgentMetadata.Builder(WebSettingsCompat.getUserAgentMetadata(view.settings))
+                    .setBrandVersionList(brands)
+                    .setFullVersion(full)
+                    .build()
+                WebSettingsCompat.setUserAgentMetadata(view.settings, metadata)
+            }
+        } catch (e: Exception) {
+            // An older WebView: sites still work, they just see a WebView.
+        }
+    }
+
+    /** Sets up the main page view: settings, downloads, page events. */
+    private fun configureWebView(view: WebView) {
+        applySettings(view)
+        view.addJavascriptInterface(blobSaver, BlobSaver.NAME)
+
+        // Every download goes into Arrow Files, inside Arrow Os.
+        view.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             startDownload(url, userAgent, contentDisposition, mimeType)
         }
 
-        binding.webView.webViewClient = object : WebViewClient() {
+        view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
                 handleUrl(view, request.url.toString())
 
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                // Ads and trackers are skipped: pages load faster and use less data and memory.
+                if (!request.isForMainFrame && SitePolicy.shouldBlock(request.url.toString(), pageUrlForBlocking)) {
+                    return WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                }
+                return null
+            }
+
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                if (url != errorPageUrl) pageUrlForBlocking = url
                 binding.pageProgress.isVisible = true
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
                 binding.pageProgress.isVisible = false
                 if (url != errorPageUrl && previous.updateTitle(url, view.title)) savePrevious()
+                CookieManager.getInstance().flush()
                 // On a website (not one of the five apps) show the page's name.
                 if (currentApp == null && binding.browserScreen.isVisible) {
                     binding.browserTitle.text = view.title?.takeIf { it.isNotBlank() && !it.startsWith("http") }
@@ -318,6 +519,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                     resetHistoryOnNextPage = false
                     view.clearHistory()
                 }
+                if (url != errorPageUrl && url?.startsWith("http") == true) pageUrlForBlocking = url
                 // Every page (including in-page moves like a new YouTube video) goes into Previous.
                 // The title is filled in by onReceivedTitle; view.title can still be the old page's here.
                 if (url != errorPageUrl && previous.record(url, null, System.currentTimeMillis())) savePrevious()
@@ -327,9 +529,17 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 if (!request.isForMainFrame) return
                 handleLoadFailure(view, request.url, error.errorCode, error.description?.toString() ?: "")
             }
+
+            // The phone stopped the page to free memory (common on 2 GB phones). Without this
+            // Arrow Os itself would close; instead a fresh page takes its place and reloads.
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (view !== webView) return true
+                replaceCrashedWebView()
+                return true
+            }
         }
 
-        binding.webView.webChromeClient = object : WebChromeClient() {
+        view.webChromeClient = object : WebChromeClient() {
             override fun onReceivedTitle(view: WebView, title: String?) {
                 val url = view.url
                 if (url != errorPageUrl && previous.updateTitle(url, title)) savePrevious()
@@ -354,7 +564,12 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
             override fun onHideCustomView() = exitFullscreen()
 
-            // Lets sites ask for a photo or file (posting on Instagram/Facebook).
+            // A site opened a new window: a sign-in window stays a window; anything else opens here.
+            override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message): Boolean =
+                openPopup(resultMsg)
+
+            // Lets sites ask for a photo or file (posting on Instagram, TikTok, Facebook...).
+            // Arrow Files comes first, so what was made in Arrow Os can be posted.
             override fun onShowFileChooser(
                 webView: WebView,
                 callback: ValueCallback<Array<Uri>>,
@@ -362,27 +577,117 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             ): Boolean {
                 fileChooserCallback?.onReceiveValue(null)
                 fileChooserCallback = callback
-                return try {
-                    fileChooser.launch(params.createIntent())
-                    true
-                } catch (e: Exception) {
-                    fileChooserCallback = null
-                    toast("No app on this phone can pick that file")
-                    false
-                }
+                showFilePicker(params)
+                return true
             }
         }
+    }
 
-        binding.browserBack.setOnClickListener { goBack() }
-        binding.browserHome.setOnClickListener { showHome() }
-        binding.browserReload.setOnClickListener { binding.webView.reload() }
-        binding.browserPrevious.setOnClickListener { showPrevious() }
-        binding.browserFiles.setOnClickListener { showFiles() }
+    /** The page view crashed or was stopped by the phone: put a fresh one in its place and reload. */
+    private fun replaceCrashedWebView() {
+        val lastUrl = pageUrlForBlocking ?: previous.all.firstOrNull()?.url
+        val old = webView
+        exitFullscreen()
+        closePopup()
+        binding.webHolder.removeView(old)
+        try {
+            old.destroy()
+        } catch (e: Exception) {
+            // already gone
+        }
+        val fresh = WebView(this)
+        binding.webHolder.addView(fresh, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        webView = fresh
+        web.webView = fresh
+        configureWebView(fresh)
+        if (binding.browserScreen.isVisible && lastUrl != null && lastUrl.startsWith("http")) {
+            toast(getString(R.string.page_restarting))
+            resetHistoryOnNextPage = true
+            fresh.loadUrl(lastUrl)
+        } else {
+            currentApp = null
+        }
+    }
+
+    // ---------- Sign-in windows ----------
+
+    private fun openPopup(resultMsg: android.os.Message): Boolean {
+        closePopup()
+        val popup = WebView(this)
+        applySettings(popup)
+        popup.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val url = request.url.toString()
+                if (!url.startsWith("http")) return handleUrl(view, url)
+                return takeOverPopup(url)
+            }
+
+            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                if (url != null && url.startsWith("http")) takeOverPopup(url)
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                CookieManager.getInstance().flush()
+                binding.popupTitle.text = view.title?.takeIf { it.isNotBlank() && !it.startsWith("http") }
+                    ?: Uri.parse(url ?: "").host ?: getString(R.string.popup_title)
+            }
+        }
+        popup.webChromeClient = object : WebChromeClient() {
+            override fun onCloseWindow(window: WebView) = closePopup()
+        }
+        popup.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            startDownload(url, userAgent, contentDisposition, mimeType)
+        }
+        popupView = popup
+        binding.popupHolder.addView(popup, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        binding.popupTitle.text = getString(R.string.popup_title)
+        binding.popupScreen.isVisible = true
+        (resultMsg.obj as WebView.WebViewTransport).webView = popup
+        resultMsg.sendToTarget()
+        return true
+    }
+
+    /**
+     * A new window that is not a sign-in (a link that opens "in a new tab") becomes a normal
+     * page in Arrow Os. Returns true when the popup was closed.
+     */
+    private fun takeOverPopup(url: String): Boolean {
+        if (SitePolicy.isSignInPopup(url) || popupView == null) return false
+        closePopup()
+        val app = ArrowApp.fromUrl(url)
+        if (app != null) openApp(app, url) else openWebsite(url, Uri.parse(url).host ?: url)
+        return true
+    }
+
+    private fun closePopup() {
+        val popup = popupView ?: return
+        popupView = null
+        binding.popupScreen.isVisible = false
+        binding.popupHolder.removeAllViews()
+        housekeeping.post {
+            try {
+                popup.stopLoading()
+                popup.destroy()
+            } catch (e: Exception) {
+                // already gone
+            }
+        }
+        updateGoogleCard()
     }
 
     /** Keeps every link inside Arrow Os. Returns true when the WebView should NOT load [url] itself. */
     private fun handleUrl(view: WebView, url: String): Boolean {
-        if (url.startsWith("http://") || url.startsWith("https://")) return false
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            // WhatsApp Web only opens for a computer browser; switch the browser name to match.
+            val wantDesktop = SitePolicy.needsDesktopSite(url)
+            val isDesktop = view.settings.userAgentString == desktopUserAgent
+            if (wantDesktop != isDesktop) {
+                view.settings.userAgentString = if (wantDesktop) desktopUserAgent else mobileUserAgent
+                view.loadUrl(url)
+                return true
+            }
+            return false
+        }
         if (url.startsWith("intent://")) {
             // Sites try to bounce to the real app; use their web fallback instead.
             val fallback = try {
@@ -395,7 +700,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 return true
             }
         }
-        // fb://, instagram://, snssdk://, market:// ... would leave Arrow Os, so block them.
+        // fb://, instagram://, snssdk://, market://, mailto: ... would leave Arrow Os, so block them.
         return true
     }
 
@@ -409,29 +714,53 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private fun openApp(app: ArrowApp, url: String = app.homeUrl) {
         val switching = currentApp != app || !binding.browserScreen.isVisible
+        val asleep = !binding.browserScreen.isVisible && isAsleep(url, app)
         currentApp = app
         binding.browserTitle.text = app.label
-        load(url, freshHistory = switching)
+        if (asleep) wakePage() else load(url, freshHistory = switching)
     }
 
     /** Opens any website inside Arrow Os. */
     private fun openWebsite(url: String, title: String) {
         val switching = currentApp != null || !binding.browserScreen.isVisible
+        val asleep = !binding.browserScreen.isVisible && isAsleep(url, null)
         currentApp = null
         binding.browserTitle.text = title
-        load(url, freshHistory = switching)
+        if (asleep) wakePage() else load(url, freshHistory = switching)
+    }
+
+    /** Shows the page that was asleep behind the home screen, right where the user left it. */
+    private fun wakePage() {
+        hidePrevious()
+        hideDesigner()
+        binding.homeScreen.isVisible = false
+        binding.browserScreen.isVisible = true
+        webView.onResume()
+        webView.resumeTimers()
     }
 
     private fun load(url: String, freshHistory: Boolean) {
         hidePrevious()
         hideDesigner()
+        closePopup()
         errorPageUrl = null
         binding.homeScreen.isVisible = false
         binding.browserScreen.isVisible = true
+        webView.onResume()
+        webView.resumeTimers()
         pendingAlternatives.clear()
         triedAlternatives = false
         if (freshHistory) resetHistoryOnNextPage = true
-        binding.webView.loadUrl(url)
+        webView.settings.cacheMode = if (isOnline()) WebSettings.LOAD_DEFAULT else WebSettings.LOAD_CACHE_ELSE_NETWORK
+        webView.settings.userAgentString = if (SitePolicy.needsDesktopSite(url)) desktopUserAgent else mobileUserAgent
+        pageUrlForBlocking = url
+        lastRequestedUrl = url
+        webView.loadUrl(url)
+    }
+
+    private fun reloadPage() {
+        val failed = errorPageUrl
+        if (failed != null) load(failed, freshHistory = false) else webView.reload()
     }
 
     /**
@@ -440,24 +769,30 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
      */
     private fun handleLoadFailure(view: WebView, failed: Uri, errorCode: Int, description: String) {
         val host = failed.host ?: ""
-        if (!triedAlternatives) {
-            triedAlternatives = true
-            pendingAlternatives = WebLinks.alternativesFor(host).filter { it != host }.toMutableList()
+        val connectionDrop = !isOnline() || SitePolicy.isConnectionDrop(description)
+        if (!connectionDrop) {
+            if (!triedAlternatives) {
+                triedAlternatives = true
+                pendingAlternatives = WebLinks.alternativesFor(host).filter { it != host }.toMutableList()
+            }
+            val next = pendingAlternatives.removeFirstOrNull()
+            if (next != null) {
+                binding.voiceStatus.text = getString(R.string.trying_other_address, next)
+                val nextUrl = if (next == "web.whatsapp.com") "https://web.whatsapp.com/" else failed.buildUpon().authority(next).build().toString()
+                if (SitePolicy.needsDesktopSite(nextUrl)) view.settings.userAgentString = desktopUserAgent
+                view.loadUrl(nextUrl)
+                return
+            }
         }
-        val next = pendingAlternatives.removeFirstOrNull()
-        if (next != null) {
-            binding.voiceStatus.text = getString(R.string.trying_other_address, next)
-            view.loadUrl(failed.buildUpon().authority(next).build().toString())
-            return
-        }
-        showErrorPage(view, failed.toString(), host, errorCode, description)
+        showErrorPage(view, failed.toString(), host, errorCode, description, connectionDrop)
     }
 
-    private fun showErrorPage(view: WebView, url: String, host: String, errorCode: Int, description: String) {
+    private fun showErrorPage(view: WebView, url: String, host: String, errorCode: Int, description: String, connectionDrop: Boolean) {
         val blocked = errorCode == WebViewClient.ERROR_CONNECT || errorCode == WebViewClient.ERROR_HOST_LOOKUP ||
             description.contains("REFUSED") || description.contains("RESET") || description.contains("NAME_NOT_RESOLVED")
         val isFacebook = host.contains("facebook")
         val reason = when {
+            connectionDrop -> getString(R.string.waiting_for_internet)
             isFacebook && blocked -> getString(R.string.error_facebook_blocked)
             blocked -> getString(R.string.error_blocked, host)
             else -> getString(R.string.error_generic, description)
@@ -477,47 +812,178 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         view.loadDataWithBaseURL(null, html, "text/html", "utf-8", url)
     }
 
+    private fun isOnline(): Boolean {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return true
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return false) ?: return false
+        return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    /** When the internet comes back, a page that failed to load reloads by itself. */
+    private fun watchNetwork() {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return
+        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                runOnUiThread {
+                    webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+                    val failed = errorPageUrl
+                    if (failed != null && binding.browserScreen.isVisible) {
+                        toast(getString(R.string.internet_back))
+                        load(failed, freshHistory = false)
+                    }
+                    uploadWaitingFiles()
+                }
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (e: Exception) {
+            // Not available on this phone; the Try again button still works.
+        }
+    }
+
+    /** Remembers the open page, so after the phone closes Arrow Os the user comes back to it. */
+    private fun rememberOpenPage() {
+        val url = webView.url
+        val open = binding.browserScreen.isVisible && errorPageUrl == null && url != null && url.startsWith("http")
+        prefs.edit()
+            .putString(PREF_LAST_URL, if (open) url else null)
+            .putString(PREF_LAST_APP, if (open) currentApp?.name else null)
+            .putString(PREF_LAST_TITLE, if (open) binding.browserTitle.text.toString() else null)
+            .putLong(PREF_LAST_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    /** Opens the page the user was on when Arrow Os was last closed (within a day). Returns true if it did. */
+    private fun restoreOpenPage(): Boolean {
+        val url = prefs.getString(PREF_LAST_URL, null) ?: return false
+        if (System.currentTimeMillis() - prefs.getLong(PREF_LAST_AT, 0) > DateUtils.DAY_IN_MILLIS) return false
+        val app = prefs.getString(PREF_LAST_APP, null)?.let { name -> ArrowApp.entries.firstOrNull { it.name == name } }
+        if (app != null) openApp(app, url) else openWebsite(url, prefs.getString(PREF_LAST_TITLE, null) ?: Uri.parse(url).host ?: url)
+        return true
+    }
+
+    // ---------- Downloads: always into Arrow Files, never the phone's storage ----------
+
     /**
-     * Every download goes into the user's Arrow Files folder on the phone:
+     * Every download goes into the user's Arrow Files folder inside Arrow Os's private storage:
      * ArrowFiles/<user>/websites/<site>/<name>. The site is the page the user was on.
      */
     private fun startDownload(url: String, userAgent: String?, contentDisposition: String?, mimeType: String?) {
-        val pageUrl = binding.webView.url?.takeIf { it.startsWith("http") } ?: url
+        val pageUrl = webView.url?.takeIf { it.startsWith("http") } ?: url
         val source = ArrowFilesIndex.sourceOf(pageUrl)
-        if (url.startsWith("data:")) {
-            saveDataUrl(url, source, pageUrl)
-            return
+        when {
+            url.startsWith("data:") -> saveDataUrl(url, source, pageUrl)
+            url.startsWith("blob:") -> saveBlob(url, source, pageUrl, contentDisposition, mimeType)
+            url.startsWith("http") -> downloadToArrowFiles(url, userAgent, contentDisposition, mimeType, source, pageUrl)
+            else -> toast(getString(R.string.files_cant_download))
         }
-        if (!url.startsWith("http")) {
-            toast(getString(R.string.files_cant_download))
-            return
+    }
+
+    private fun downloadToArrowFiles(
+        url: String, userAgent: String?, contentDisposition: String?, mimeType: String?, source: String, pageUrl: String,
+    ) {
+        val wanted = URLUtil.guessFileName(url, contentDisposition, mimeType)
+        val (name, relPath) = newFilePlace(source, wanted) ?: return
+        val mime = mimeType?.takeIf { it.isNotBlank() && it != "application/octet-stream" } ?: mimeOf(name)
+        val file = ArrowFile(
+            id = UUID.randomUUID().toString(), name = name, source = source, kind = FileKind.of(name, mime),
+            mimeType = mime, size = 0, savedAt = System.currentTimeMillis(), originUrl = url,
+            relPath = relPath, status = FileStatus.Downloading,
+        )
+        files.add(file)
+        saveFiles()
+        syncFile(file.id)
+        runDownload(file, url, userAgent, pageUrl)
+        toast(getString(R.string.files_downloading, name))
+    }
+
+    private fun runDownload(f: ArrowFile, url: String, userAgent: String?, referer: String?) {
+        val target = File(filesBase(), f.relPath)
+        val headers = buildMap {
+            CookieManager.getInstance().getCookie(url)?.let { put("Cookie", it) }
+            put("User-Agent", userAgent?.takeIf { it.isNotBlank() } ?: mobileUserAgent)
+            if (referer != null && referer.startsWith("http")) put("Referer", referer)
         }
-        try {
-            val wanted = URLUtil.guessFileName(url, contentDisposition, mimeType)
-            val (name, relPath) = newFilePlace(source, wanted) ?: return
-            val mime = mimeType?.takeIf { it.isNotBlank() && it != "application/octet-stream" } ?: mimeOf(name)
-            val request = DownloadManager.Request(Uri.parse(url)).apply {
-                setMimeType(mime)
-                CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
-                userAgent?.let { addRequestHeader("User-Agent", it) }
-                setTitle(name)
-                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalFilesDir(this@MainActivity, null, relPath)
+        val owner = filesUser
+        downloader.download(f.id, url, headers, target, object : ArrowDownloader.Listener {
+            override fun onProgress(id: String, bytes: Long, total: Long) {
+                if (filesUser != owner) return
+                downloadProgress[id] = bytes to total
+                if (binding.filesScreen.isVisible) renderFiles()
             }
-            val downloadId = getSystemService(DownloadManager::class.java).enqueue(request)
-            var added = ""
-            files.add(
-                ArrowFile(
-                    id = UUID.randomUUID().toString(), name = name, source = source, kind = FileKind.of(name, mime),
-                    mimeType = mime, size = 0, savedAt = System.currentTimeMillis(), originUrl = pageUrl,
-                    relPath = relPath, status = FileStatus.Downloading, downloadId = downloadId,
-                ).also { added = it.id },
-            )
-            saveFiles()
-            syncFile(added)
-            toast(getString(R.string.files_downloading, name))
-        } catch (e: Exception) {
-            toast("Download failed: ${e.message}")
+
+            override fun onFinished(id: String, ok: Boolean, size: Long, mimeType: String?) {
+                downloadProgress.remove(id)
+                if (filesUser != owner) return
+                val done = files.update(id) {
+                    if (ok) {
+                        val mime = mimeType?.takeIf { m -> m.isNotBlank() && m != "application/octet-stream" && it.mimeType == "application/octet-stream" }
+                        it.copy(status = FileStatus.Ready, size = size, mimeType = mime ?: it.mimeType,
+                            kind = if (mime != null) FileKind.of(it.name, mime) else it.kind)
+                    } else {
+                        it.copy(status = FileStatus.Failed)
+                    }
+                } ?: return
+                saveFiles()
+                syncFile(id)
+                if (ok) uploadWaitingFiles()
+                toast(getString(if (ok) R.string.files_saved else R.string.files_failed, done.name))
+                if (binding.filesScreen.isVisible) renderFiles()
+            }
+        })
+    }
+
+    /** A "blob:" file made inside the page: the page reads it out to Arrow Os in pieces. */
+    private fun saveBlob(url: String, source: String, pageUrl: String, contentDisposition: String?, mimeType: String?) {
+        val wanted = URLUtil.guessFileName(url, contentDisposition, mimeType).let { guess ->
+            // blob: links have no name of their own; use the page's title if the guess is just the id.
+            if (guess.length > 30 && !guess.contains('.')) "download" else guess
+        }
+        val (name, relPath) = newFilePlace(source, wanted) ?: return
+        val mime = mimeType?.takeIf { it.isNotBlank() } ?: mimeOf(name)
+        val file = ArrowFile(
+            id = UUID.randomUUID().toString(), name = name, source = source, kind = FileKind.of(name, mime),
+            mimeType = mime, size = 0, savedAt = System.currentTimeMillis(), originUrl = pageUrl,
+            relPath = relPath, status = FileStatus.Downloading,
+        )
+        files.add(file)
+        saveFiles()
+        toast(getString(R.string.files_downloading, name))
+        val owner = filesUser
+        val target = File(filesBase(), relPath)
+        downloadProgress[file.id] = 0L to -1L
+        blobSaver.save(webView, url, file.id, target) { ok, blobMime ->
+            downloadProgress.remove(file.id)
+            if (filesUser != owner) return@save
+            if (!ok) {
+                // Streaming videos (YouTube, TikTok) are made of pieces and can't be saved whole.
+                files.remove(file.id)
+                saveFiles()
+                toast(getString(R.string.files_cant_save_stream))
+            } else {
+                val realMime = blobMime ?: mime
+                var finalName = name
+                // Give a nameless file the right ending, for example "download.mp4".
+                if (!name.contains('.')) {
+                    MimeTypeMap.getSingleton().getExtensionFromMimeType(realMime)?.let { ext ->
+                        val renamed = File(target.parentFile, "$name.$ext")
+                        if (!renamed.exists() && target.renameTo(renamed)) finalName = "$name.$ext"
+                    }
+                }
+                files.update(file.id) {
+                    it.copy(
+                        name = finalName, relPath = ArrowFilesIndex.pathFor(owner, source, finalName),
+                        status = FileStatus.Ready, size = File(filesBase(), ArrowFilesIndex.pathFor(owner, source, finalName)).length(),
+                        mimeType = realMime, kind = FileKind.of(finalName, realMime),
+                    )
+                }
+                saveFiles()
+                syncFile(file.id)
+                uploadWaitingFiles()
+                toast(getString(R.string.files_saved, finalName))
+            }
+            if (binding.filesScreen.isVisible) renderFiles()
         }
     }
 
@@ -530,7 +996,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             val bytes = if (header.contains(";base64")) Base64.decode(body, Base64.DEFAULT) else Uri.decode(body).toByteArray()
             val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
             val (name, relPath) = newFilePlace(source, if (ext != null) "download.$ext" else "download") ?: return
-            val target = File(getExternalFilesDir(null), relPath)
+            val target = File(filesBase(), relPath)
             target.writeBytes(bytes)
             var added = ""
             files.add(
@@ -549,14 +1015,22 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
     }
 
+    /**
+     * Arrow Files' home: the app's private storage. Only Arrow Os can read it. The phone's
+     * file manager, gallery and other apps can't see it, and it is never backed up to the phone's accounts.
+     */
+    private fun filesBase(): File = filesDir
+
+    /** Where older versions of Arrow Os kept files; they are moved inside on first launch. */
+    private fun legacyBase(): File? = getExternalFilesDir(null)
+
     /** A free name and its path in the user's folder for [source], with the folder created. */
     private fun newFilePlace(source: String, wanted: String): Pair<String, String>? {
-        val base = getExternalFilesDir(null)
-        if (base == null) {
-            toast(getString(R.string.files_save_failed))
-            return null
+        val base = filesBase()
+        val name = files.uniqueName(filesUser, source, wanted) {
+            File(base, ArrowFilesIndex.pathFor(filesUser, source, it)).exists() ||
+                File(base, ArrowFilesIndex.pathFor(filesUser, source, it) + ".part").exists()
         }
-        val name = files.uniqueName(filesUser, source, wanted) { File(base, ArrowFilesIndex.pathFor(filesUser, source, it)).exists() }
         val relPath = ArrowFilesIndex.pathFor(filesUser, source, name)
         File(base, relPath).parentFile?.mkdirs()
         return name to relPath
@@ -566,9 +1040,47 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase(Locale.ROOT))
             ?: "application/octet-stream"
 
-    private fun fileOf(f: ArrowFile): File? = getExternalFilesDir(null)?.let { File(it, f.relPath) }
+    /** The file on this phone: inside Arrow Os, or (until it is moved) where older versions kept it. */
+    private fun fileOf(f: ArrowFile): File {
+        val inside = File(filesBase(), f.relPath)
+        if (inside.exists()) return inside
+        val old = legacyBase()?.let { File(it, f.relPath) }
+        return if (old != null && old.exists()) old else inside
+    }
 
-    /** Marks a download as ready or failed once the phone has finished with it. */
+    /** Moves files that older versions saved in the phone's shared storage into Arrow Os's private storage. */
+    private fun moveFilesInsideArrowOs() {
+        val oldRoot = legacyBase()?.let { File(it, ArrowFilesIndex.ROOT) } ?: return
+        if (!oldRoot.exists()) return
+        val newRoot = File(filesBase(), ArrowFilesIndex.ROOT)
+        toast(getString(R.string.files_moving))
+        cloudWorker.execute {
+            oldRoot.walkBottomUp().forEach { src ->
+                val rel = src.relativeTo(oldRoot)
+                val dest = File(newRoot, rel.path)
+                try {
+                    if (src.isFile) {
+                        if (src.name.endsWith(".part")) {
+                            src.delete()
+                        } else if (!dest.exists()) {
+                            dest.parentFile?.mkdirs()
+                            if (!src.renameTo(dest)) src.copyTo(dest, overwrite = false)
+                            src.delete()
+                        } else {
+                            src.delete()
+                        }
+                    } else {
+                        src.delete() // empty folder after its files moved
+                    }
+                } catch (e: Exception) {
+                    // Leave it; fileOf() still finds it in the old place.
+                }
+            }
+            runOnUiThread { if (binding.filesScreen.isVisible) renderFiles() }
+        }
+    }
+
+    /** Marks a download from an older version (phone download manager) as ready or failed. */
     private fun finishDownload(f: ArrowFile, announce: Boolean) {
         var status = -1
         try {
@@ -579,7 +1091,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         } catch (e: Exception) {
             // Fall back to checking the file on disk.
         }
-        val onDisk = fileOf(f)?.takeIf { it.exists() && it.length() > 0 }
+        val onDisk = fileOf(f).takeIf { it.exists() && it.length() > 0 }
         val ready = status == DownloadManager.STATUS_SUCCESSFUL || (status == -1 && onDisk != null)
         val failed = !ready && (status == DownloadManager.STATUS_FAILED || status == -1)
         if (!ready && !failed) return // still downloading
@@ -589,14 +1101,27 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
         saveFiles()
         syncFile(f.id)
-        if (ready) uploadWaitingFiles()
+        if (ready) {
+            uploadWaitingFiles()
+            moveFilesInsideArrowOs()
+        }
         if (announce) toast(getString(if (ready) R.string.files_saved else R.string.files_failed, f.name))
         if (binding.filesScreen.isVisible) renderFiles()
     }
 
-    /** Downloads that finished (or failed) while Arrow Os was closed. */
+    /** Downloads that finished, failed or were cut off while Arrow Os was closed. */
     private fun checkUnfinishedDownloads() {
-        files.all.filter { it.status == FileStatus.Downloading }.forEach { finishDownload(it, announce = false) }
+        files.all.filter { it.status == FileStatus.Downloading }.forEach { f ->
+            when {
+                f.downloadId >= 0 -> finishDownload(f, announce = false) // an older version's download
+                !downloader.isActive(f.id) && downloadProgress[f.id] == null -> {
+                    // Arrow Os was closed mid-download: it can be started again from Arrow Files.
+                    files.update(f.id) { it.copy(status = FileStatus.Failed) }
+                    saveFiles()
+                    syncFile(f.id)
+                }
+            }
+        }
     }
 
     /** Files that sat in Trash for 30 days are removed for good. */
@@ -604,7 +1129,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         val expired = files.expiredTrash(System.currentTimeMillis())
         if (expired.isEmpty()) return
         expired.forEach { f ->
-            fileOf(f)?.delete()
+            fileOf(f).delete()
             if (f.inCloud) deleteCloudCopy(f)
             files.remove(f.id)
             syncFile(f.id)
@@ -632,6 +1157,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private fun goBack() {
         when {
             fullscreenView != null -> exitFullscreen()
+            binding.viewerScreen.isVisible -> closeViewer()
+            binding.popupScreen.isVisible -> {
+                val popup = popupView
+                if (popup != null && popup.canGoBack()) popup.goBack() else closePopup()
+            }
             binding.designerScreen.isVisible -> if (homeSetup != null) hideDesigner()
             binding.previousScreen.isVisible -> hidePrevious()
             binding.filesScreen.isVisible && filesShowTrash -> {
@@ -639,7 +1169,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 renderFiles()
             }
             binding.filesScreen.isVisible -> hideFiles()
-            binding.browserScreen.isVisible && binding.webView.canGoBack() -> binding.webView.goBack()
+            binding.browserScreen.isVisible && webView.canGoBack() -> webView.goBack()
             binding.browserScreen.isVisible -> showHome()
         }
     }
@@ -907,8 +1437,20 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             .show()
     }
 
+    /**
+     * Saves Previous a moment later, once. YouTube and TikTok change the address on every
+     * video, and writing the whole list each time made scrolling stutter on small phones.
+     */
     private fun savePrevious() {
-        prefs.edit().putString(PREF_PREVIOUS, previous.encode()).apply()
+        housekeeping.removeCallbacks(savePreviousNow)
+        housekeeping.postDelayed(savePreviousNow, 2000)
+    }
+
+    private val savePreviousNow = Runnable { prefs.edit().putString(PREF_PREVIOUS, previous.encode()).apply() }
+
+    private fun flushPrevious() {
+        housekeeping.removeCallbacks(savePreviousNow)
+        savePreviousNow.run()
     }
 
     // ---------- Sign-in ----------
@@ -1021,6 +1563,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
         uploadWaitingFiles()
         showHome()
+        // Back where the user left off, still signed in to the site.
+        if (homeSetup != null) restoreOpenPage()
         if (!userMuted) ensureMicPermissionThenListen(userAsked = false)
     }
 
@@ -1032,7 +1576,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         val guestFiles = prefs.getString(PREF_FILES, null)
         if (!guestFiles.isNullOrBlank() && files.all.isEmpty()) {
             val guest = ArrowFilesIndex.decode(guestFiles)
-            getExternalFilesDir(null)?.let { base ->
+            listOfNotNull(filesBase(), legacyBase()).forEach { base ->
                 val from = File(base, ArrowFilesIndex.userFolder(ArrowFilesIndex.LOCAL_USER))
                 val to = File(base, ArrowFilesIndex.userFolder(uid))
                 if (from.exists() && !to.exists()) from.renameTo(to)
@@ -1062,6 +1606,17 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private fun signOut() {
         cloud.signOut()
+        rememberOpenPage()
+        prefs.edit().remove(PREF_LAST_URL).apply()
+        // The next person on this phone must not land in this person's Gmail, TikTok or WhatsApp.
+        closePopup()
+        closeViewer()
+        CookieManager.getInstance().removeAllCookies(null)
+        CookieManager.getInstance().flush()
+        android.webkit.WebStorage.getInstance().deleteAllData()
+        webView.clearCache(true)
+        webView.clearFormData()
+        webView.clearHistory()
         accountUid = null
         filesUser = ArrowFilesIndex.LOCAL_USER
         files = ArrowFilesIndex()
@@ -1071,8 +1626,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         currentApp = null
         binding.browserScreen.isVisible = false
         binding.homeScreen.isVisible = true
-        binding.webView.stopLoading()
-        binding.webView.loadUrl("about:blank")
+        webView.stopLoading()
+        webView.loadUrl("about:blank")
         renderHomeApps()
         showSignIn()
     }
@@ -1143,13 +1698,16 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             row.fileIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(f.kind.colorHex))
             row.fileName.text = f.name
             val state = when (f.status) {
-                FileStatus.Downloading -> getString(R.string.files_still_downloading)
+                FileStatus.Downloading -> downloadProgress[f.id]?.takeIf { it.first > 0 }?.let { (bytes, total) ->
+                    if (total > 0) getString(R.string.files_progress, Formatter.formatShortFileSize(this, bytes), Formatter.formatShortFileSize(this, total))
+                    else Formatter.formatShortFileSize(this, bytes)
+                } ?: getString(R.string.files_still_downloading)
                 FileStatus.Failed -> getString(R.string.files_failed_short)
                 FileStatus.Ready -> "${Formatter.formatShortFileSize(this, f.size)} · " +
                     DateUtils.getRelativeTimeSpanString(f.savedAt, now, DateUtils.MINUTE_IN_MILLIS) + " · " +
                     getString(
                         when {
-                            f.inCloud && fileOf(f)?.exists() != true -> R.string.files_cloud_only
+                            f.inCloud && !fileOf(f).exists() -> R.string.files_cloud_only
                             f.inCloud -> R.string.files_in_cloud
                             files.tooBigForCloud(f) -> R.string.files_phone_only
                             else -> R.string.files_waiting_upload
@@ -1189,18 +1747,18 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private fun showFileMenu(f: ArrowFile, anchor: View) {
         val menu = PopupMenu(this, anchor)
+        // Files stay in Arrow Os: there is no "Save to phone" or "Share to another app".
+        // A file leaves only when the user posts it on a website (it is offered whenever a site asks for a file).
         val options = when {
             f.inTrash -> listOf(R.string.files_restore, R.string.files_delete_forever)
-            f.status == FileStatus.Ready ->
-                listOf(R.string.files_open, R.string.files_share, R.string.files_save_to_phone, R.string.files_move_to_trash)
-            else -> listOf(R.string.files_delete_forever)
+            f.status == FileStatus.Ready -> listOf(R.string.files_open, R.string.files_move_to_trash)
+            f.status == FileStatus.Downloading -> listOf(R.string.files_cancel)
+            else -> listOf(R.string.files_retry, R.string.files_delete_forever)
         }
         options.forEachIndexed { i, res -> menu.menu.add(0, res, i, res) }
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 R.string.files_open -> openFile(f)
-                R.string.files_share -> shareFile(f)
-                R.string.files_save_to_phone -> saveToPhone(f)
                 R.string.files_move_to_trash -> {
                     files.moveToTrash(f.id, System.currentTimeMillis())
                     saveFiles()
@@ -1213,15 +1771,26 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                     syncFile(f.id)
                     toast(getString(R.string.files_restored))
                 }
+                R.string.files_cancel -> {
+                    downloader.cancel(f.id)
+                    downloadProgress.remove(f.id)
+                    File(filesBase(), f.relPath + ".part").delete()
+                    files.update(f.id) { it.copy(status = FileStatus.Failed) }
+                    saveFiles()
+                    syncFile(f.id)
+                    toast(getString(R.string.files_stopped))
+                }
+                R.string.files_retry -> retryDownload(f)
                 R.string.files_delete_forever -> {
-                    if (f.status == FileStatus.Downloading) {
+                    if (f.status == FileStatus.Downloading && f.downloadId >= 0) {
                         try {
                             getSystemService(DownloadManager::class.java).remove(f.downloadId)
                         } catch (e: Exception) {
                             // already gone
                         }
                     }
-                    fileOf(f)?.delete()
+                    downloader.cancel(f.id)
+                    fileOf(f).delete()
                     if (f.inCloud) deleteCloudCopy(f)
                     files.remove(f.id)
                     saveFiles()
@@ -1235,27 +1804,26 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         menu.show()
     }
 
-    /** A content link other apps may read, or null (with a message) when the file is gone. */
-    private fun shareableUri(f: ArrowFile): Uri? {
-        if (f.status != FileStatus.Ready) {
-            toast(getString(if (f.status == FileStatus.Downloading) R.string.files_still_downloading else R.string.files_failed_short))
-            return null
+    /** Starts a failed or stopped download again, into the same place in Arrow Files. */
+    private fun retryDownload(f: ArrowFile) {
+        if (!f.originUrl.startsWith("http")) {
+            toast(getString(R.string.files_cant_download))
+            return
         }
-        val file = fileOf(f)
-        if (file == null || !file.exists()) {
-            toast(getString(R.string.files_missing))
-            return null
-        }
-        return FileProvider.getUriForFile(this, "$packageName.files", file)
+        files.update(f.id) { it.copy(status = FileStatus.Downloading, downloadId = -1, size = 0) }
+        saveFiles()
+        syncFile(f.id)
+        runDownload(files.get(f.id) ?: return, f.originUrl, null, null)
+        toast(getString(R.string.files_downloading, f.name))
     }
 
     /**
      * Runs [action] once the file is on this phone. A file that is only in the cloud
-     * (saved on another phone) is downloaded first.
+     * (saved on another phone) is downloaded first, into Arrow Os.
      */
     private fun withLocalCopy(f: ArrowFile, action: () -> Unit) {
         val local = fileOf(f)
-        if (f.status != FileStatus.Ready || local == null || local.exists() || !f.inCloud) {
+        if (f.status != FileStatus.Ready || local.exists() || !f.inCloud) {
             action()
             return
         }
@@ -1284,7 +1852,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             for (f in waiting) {
                 if (accountUid != uid) break
                 val local = fileOf(f)
-                if (local == null || !local.exists()) continue
+                if (!local.exists()) continue
                 if (!cloudFiles.upload(local, f.relPath, f.mimeType)) break // offline or refused: try again later
                 runOnUiThread {
                     if (accountUid == uid) {
@@ -1305,79 +1873,84 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private fun openFile(f: ArrowFile) = withLocalCopy(f) { openFileNow(f) }
 
+    /** Opens the file inside Arrow Os. It is never handed to another app on the phone. */
     private fun openFileNow(f: ArrowFile) {
-        val uri = shareableUri(f) ?: return
-        val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, f.mimeType)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        try {
-            startActivity(intent)
-        } catch (e: ActivityNotFoundException) {
+        if (f.status != FileStatus.Ready) {
+            toast(getString(if (f.status == FileStatus.Downloading) R.string.files_still_downloading else R.string.files_failed_short))
+            return
+        }
+        val file = fileOf(f)
+        if (!file.exists()) {
+            toast(getString(R.string.files_missing))
+            return
+        }
+        binding.viewerTitle.text = f.name
+        binding.viewerScreen.isVisible = true
+        if (!viewer.show(file, f.kind, f.mimeType, f.name)) {
+            closeViewer()
             toast(getString(R.string.files_no_app))
         }
     }
 
-    private fun shareFile(f: ArrowFile) = withLocalCopy(f) { shareFileNow(f) }
-
-    private fun shareFileNow(f: ArrowFile) {
-        val uri = shareableUri(f) ?: return
-        val intent = Intent(Intent.ACTION_SEND)
-            .setType(f.mimeType)
-            .putExtra(Intent.EXTRA_STREAM, uri)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        startActivity(Intent.createChooser(intent, getString(R.string.files_share)))
+    private fun closeViewer() {
+        if (!binding.viewerScreen.isVisible) return
+        viewer.close()
+        binding.viewerScreen.isVisible = false
     }
 
-    /** Copies the file to the phone's own Downloads/ArrowOs folder, where every app can see it. */
-    private fun saveToPhone(f: ArrowFile) = withLocalCopy(f) { saveToPhoneNow(f) }
-
-    private fun saveToPhoneNow(f: ArrowFile) {
-        val src = fileOf(f)
-        if (src == null || !src.exists()) {
-            toast(getString(R.string.files_missing))
-            return
-        }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
-        ) {
-            pendingSaveToPhone = f
-            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            return
-        }
-        Thread {
-            val ok = try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val values = ContentValues().apply {
-                        put(MediaStore.Downloads.DISPLAY_NAME, f.name)
-                        put(MediaStore.Downloads.MIME_TYPE, f.mimeType)
-                        put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/ArrowOs")
-                        put(MediaStore.Downloads.IS_PENDING, 1)
-                    }
-                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                        ?: throw IllegalStateException("no place to save")
-                    contentResolver.openOutputStream(uri)?.use { out -> src.inputStream().use { it.copyTo(out) } }
-                    values.clear()
-                    values.put(MediaStore.Downloads.IS_PENDING, 0)
-                    contentResolver.update(uri, values, null, null)
+    /**
+     * A website asked for a file (to post a photo or video). Arrow Files is offered first, so
+     * work made in Arrow Os can be published; the phone's gallery is the last option.
+     */
+    private fun showFilePicker(params: WebChromeClient.FileChooserParams) {
+        val accept = params.acceptTypes.orEmpty().map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
+        val choices = files.active.filter { f ->
+            f.status == FileStatus.Ready && fileOf(f).exists() && matchesAccept(f, accept)
+        }.take(60)
+        val labels = choices.map { "${it.name}  ·  ${it.source}" } + getString(R.string.pick_from_phone)
+        var answered = false
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (choices.isEmpty()) getString(R.string.pick_none) else getString(R.string.pick_title))
+            .setItems(labels.toTypedArray()) { _, which ->
+                answered = true
+                if (which < choices.size) {
+                    val uri = FileProvider.getUriForFile(this, "$packageName.files", fileOf(choices[which]))
+                    fileChooserCallback?.onReceiveValue(arrayOf(uri))
+                    fileChooserCallback = null
                 } else {
-                    @Suppress("DEPRECATION")
-                    val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "ArrowOs")
-                    dir.mkdirs()
-                    var target = File(dir, f.name)
-                    var n = 2
-                    while (target.exists()) {
-                        target = File(dir, "${f.name.substringBeforeLast('.')} ($n)" +
-                            (if ('.' in f.name) ".${f.name.substringAfterLast('.')}" else ""))
-                        n++
+                    try {
+                        fileChooser.launch(params.createIntent())
+                    } catch (e: Exception) {
+                        fileChooserCallback?.onReceiveValue(null)
+                        fileChooserCallback = null
+                        toast("No app on this phone can pick that file")
                     }
-                    src.copyTo(target)
                 }
-                true
-            } catch (e: Exception) {
-                false
             }
-            runOnUiThread { toast(getString(if (ok) R.string.files_saved_to_phone else R.string.files_save_failed)) }
-        }.start()
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnDismissListener {
+            if (!answered) {
+                fileChooserCallback?.onReceiveValue(null)
+                fileChooserCallback = null
+            }
+        }
+        dialog.show()
+    }
+
+    /** True when [f] fits what the site's file box accepts (for example any image, "video/mp4" or ".pdf"). */
+    private fun matchesAccept(f: ArrowFile, accept: List<String>): Boolean {
+        val types = accept.flatMap { it.split(',') }.map { it.trim() }.filter { it.isNotEmpty() }
+        if (types.isEmpty() || "*/*" in types) return true
+        val mime = f.mimeType.lowercase(Locale.ROOT)
+        val name = f.name.lowercase(Locale.ROOT)
+        return types.any { t ->
+            when {
+                t.startsWith(".") -> name.endsWith(t)
+                t.endsWith("/*") -> mime.startsWith(t.removeSuffix("*"))
+                else -> mime == t
+            }
+        }
     }
 
     // ---------- Voice ----------
@@ -1502,7 +2075,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             }
             is Command.Search -> {
                 // Inside one of the five apps, search that app; anywhere else, search the web.
-                val app = command.app ?: currentApp
+                val app = command.app ?: currentApp.takeIf { inApp }
                 if (app != null) {
                     confirm(getString(R.string.say_searching, command.query, app.label))
                     openApp(app, app.searchUrl(command.query))
@@ -1512,7 +2085,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 }
             }
             is Command.OpenWebsite -> {
-                homeSetup?.findTool(command.target)?.let { tool ->
+                findHomeTool(command.target)?.let { tool ->
                     confirm(getString(R.string.say_opening, tool.label))
                     openTool(tool)
                     return
@@ -1525,7 +2098,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 goBack()
             }
             Command.Forward -> inPage {
-                if (binding.webView.canGoForward()) binding.webView.goForward() else toast("Nothing to go forward to")
+                if (webView.canGoForward()) webView.goForward() else toast("Nothing to go forward to")
             }
             Command.Home -> {
                 confirm(getString(R.string.say_home))
@@ -1534,7 +2107,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             }
             Command.Reload -> inPage {
                 confirm(getString(R.string.say_reload))
-                binding.webView.reload()
+                webView.reload()
             }
 
             Command.ScrollDown -> inPage { toast("Scrolling down"); web.scroll(0.8) }
@@ -1553,8 +2126,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                     if (name != null) confirm("Tapped $name") else { toast("Previous"); web.nextItem(forward = false) }
                 }
             }
-            Command.ZoomIn -> inPage { binding.webView.zoomIn() }
-            Command.ZoomOut -> inPage { binding.webView.zoomOut() }
+            Command.ZoomIn -> inPage { webView.zoomIn() }
+            Command.ZoomOut -> inPage { webView.zoomOut() }
 
             Command.Play -> inPage { web.play { ok -> toast(if (ok) "Playing" else "No video on this page") } }
             Command.Pause -> inPage { web.pause { ok -> toast(if (ok) "Paused" else "No video on this page") } }
@@ -1566,7 +2139,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 val spoken = CommandParser.normalize(command.spoken)
                 val toolName = Regex("^(?:open|launch|start|go to|switch to|visit|take me to) (.+)$")
                     .find(spoken)?.groupValues?.get(1) ?: spoken.takeIf { !inApp && !binding.previousScreen.isVisible }
-                val tool = toolName?.let { homeSetup?.findTool(it.removeSuffix(" app")) }
+                val tool = toolName?.let { findHomeTool(it.removeSuffix(" app")) }
                 if (tool != null) {
                     confirm(getString(R.string.say_opening, tool.label))
                     openTool(tool)
@@ -1711,6 +2284,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         const val PREF_PREVIOUS = "previous_tabs"
         const val PREF_HOME_SETUP = "home_setup"
         const val PREF_FILES = "arrow_files"
+        const val PREF_LAST_URL = "last_url"
+        const val PREF_LAST_APP = "last_app"
+        const val PREF_LAST_TITLE = "last_title"
+        const val PREF_LAST_AT = "last_at"
         const val FILES_COLOR = "#0091B3"
         val previousScrollCommands = setOf(
             Command.ScrollDown, Command.ScrollUp, Command.ScrollTop, Command.ScrollBottom, Command.NextItem, Command.PreviousItem,

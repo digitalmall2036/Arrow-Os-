@@ -10,7 +10,7 @@ import org.json.JSONObject
  * their label and typing into text boxes. This is what lets commands act *inside*
  * YouTube, TikTok, Facebook, etc.
  */
-class WebActions(private val webView: WebView) {
+class WebActions(var webView: WebView) {
 
     /** Scrolls the page (or the feed under the middle of the screen) by [screens] screen heights. */
     fun scroll(screens: Double, done: (Boolean) -> Unit = {}) = run("scroll($screens)", done)

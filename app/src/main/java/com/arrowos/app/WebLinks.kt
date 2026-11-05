@@ -34,6 +34,8 @@ object WebLinks {
         "www.instagram.com", "instagram.com", "m.instagram.com" -> listOf("www.instagram.com", "m.instagram.com")
         "m.youtube.com", "youtube.com", "www.youtube.com" -> listOf("m.youtube.com", "www.youtube.com")
         "www.tiktok.com", "tiktok.com", "m.tiktok.com" -> listOf("www.tiktok.com", "m.tiktok.com")
+        // The WhatsApp Business advert site is refused on many networks; WhatsApp Web runs the account itself.
+        "business.whatsapp.com", "www.whatsapp.com", "whatsapp.com" -> listOf("web.whatsapp.com")
         else -> emptyList()
     }
 }

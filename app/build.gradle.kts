@@ -13,8 +13,8 @@ android {
         applicationId = "com.arrowos.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildTypes {
@@ -42,6 +42,9 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.9.1")
     implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
+    // Hides the WebView marks that make Google sign-in and "verify your browser" checks refuse Arrow Os.
+    implementation("androidx.webkit:webkit:1.12.1")
 
     // Email sign-in and the user's cloud records (Firebase free plan).
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
