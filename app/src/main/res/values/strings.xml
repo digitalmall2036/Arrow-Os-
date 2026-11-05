@@ -63,14 +63,27 @@
     <string name="designer_saved">Your home screen is ready</string>
     <string name="designer_empty_input">Type your business or profession first</string>
     <string name="home_business">Your %1$s space</string>
-    <string name="home_empty">No apps yet. Tap \"Change my business or apps\" to pick some.</string>
+    <string name="home_empty">No business apps yet. Tap \"Change my business or apps\" to pick some.</string>
+    <string name="home_essentials">Essentials</string>
+    <string name="home_business_apps">Your business apps</string>
+    <string name="google_signed_out">Sign in once with one Google account. Gmail, YouTube, Drive and every \"Sign in with Google\" in Arrow Os will use it.</string>
+    <string name="google_signed_in">✓ Your Arrow Os Google account is signed in. Gmail, YouTube, Drive and \"Sign in with Google\" all use it.</string>
+    <string name="google_choice_title">Your Arrow Os account</string>
+    <string name="google_choice_message">Use one Google account for everything inside Arrow Os. It stays signed in until you sign out of Arrow Os, and it is kept apart from the phone\'s own accounts.</string>
+    <string name="google_sign_in">Sign in</string>
+    <string name="google_create">Create a new account</string>
+    <string name="popup_title">Sign in</string>
+    <string name="close">Close</string>
+    <string name="page_restarting">The page was stopped to free memory. Reloading…</string>
+    <string name="waiting_for_internet">No internet. Arrow Os will reload this page as soon as the connection is back.</string>
+    <string name="internet_back">Back online. Reloading…</string>
 
     <!-- Arrow Files: every file downloaded in Arrow Os -->
     <string name="files_title">Arrow Files</string>
     <string name="files_trash">Trash</string>
     <string name="files_back_to_files">Files</string>
     <string name="files_trash_title">Trash</string>
-    <string name="files_hint">Every file you download in Arrow Os, newest first. Kept on this phone and copied to your account.</string>
+    <string name="files_hint">Every file you download in Arrow Os, newest first. They stay inside Arrow Os, never in the phone\'s storage, and are copied to your account.</string>
     <string name="files_trash_hint">Deleted files stay here for 30 days, then they are removed for good.</string>
     <string name="files_empty">No files yet. Anything you download from a website inside Arrow Os lands here.</string>
     <string name="files_trash_empty">Trash is empty.</string>
@@ -90,13 +103,22 @@
     <string name="files_still_downloading">Still downloading</string>
     <string name="files_failed_short">Download failed</string>
     <string name="files_missing">This file is no longer on the phone</string>
-    <string name="files_no_app">No app on this phone can open this file</string>
+    <string name="files_no_app">Arrow Os can\'t show this kind of file yet. You can still post it: it is listed whenever a website asks for a file.</string>
     <string name="files_saved_to_phone">Saved to Downloads/ArrowOs</string>
     <string name="files_save_failed">Couldn\'t save to the phone</string>
     <string name="files_trashed">Moved to Trash</string>
     <string name="files_restored">Restored</string>
     <string name="files_deleted">Deleted</string>
     <string name="files_cant_download">This file can\'t be downloaded here</string>
+    <string name="files_cant_save_stream">This video plays in pieces and can\'t be saved. Try the site\'s own Download button.</string>
+    <string name="files_progress">%1$s of %2$s</string>
+    <string name="files_retry">Download again</string>
+    <string name="files_cancel">Stop download</string>
+    <string name="files_stopped">Download stopped</string>
+    <string name="files_moving">Moving your files inside Arrow Os…</string>
+    <string name="pick_title">Choose a file to post</string>
+    <string name="pick_from_phone">From the phone (gallery or files)</string>
+    <string name="pick_none">No matching files in Arrow Files yet</string>
     <string name="say_files">Arrow Files</string>
     <string name="files_in_cloud">in cloud</string>
     <string name="files_cloud_only">in cloud, tap to get</string>
@@ -117,6 +139,6 @@
     <string name="signin_welcome">Signed in as %1$s</string>
     <string name="home_account">%1$s · Sign out</string>
     <string name="signout_title">Sign out?</string>
-    <string name="signout_message">Your files stay safe in your account. Sign in again to see them.</string>
+    <string name="signout_message">Your files stay safe in your account. You will also be signed out of every website inside Arrow Os, so the next person can\'t use your accounts.</string>
     <string name="signout">Sign out</string>
 </resources>

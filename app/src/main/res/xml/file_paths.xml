@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Lets other apps open or receive a file from Arrow Files when the user taps Open or Share. -->
+<!-- Lets a website inside Arrow Os read a file from Arrow Files when the user posts it. -->
 <paths>
-    <external-files-path name="arrow_files" path="ArrowFiles/" />
+    <files-path name="arrow_files" path="ArrowFiles/" />
 </paths>

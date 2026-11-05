@@ -61,8 +61,12 @@ object AutoDesigner {
         t("gclassroom", "Google Classroom", "https://classroom.google.com/", "#0F9D58", "Run classes online"),
         t("gads", "Google Ads", "https://ads.google.com/", "#FBBC04", "Advertise on Google"),
         t("ganalytics", "Google Analytics", "https://analytics.google.com/", "#E37400", "Website visitors and stats"),
-        t("whatsapp", "WhatsApp Web", "https://web.whatsapp.com/", "#25D366", "Chat with customers"),
-        t("whatsapp_business", "WhatsApp Business", "https://business.whatsapp.com/", "#128C7E", "Catalog and customer chat"),
+        t("whatsapp", "WhatsApp", "https://web.whatsapp.com/", "#25D366", "Chat with customers"),
+        // business.whatsapp.com is only an advert page (and many networks refuse it). WhatsApp Web
+        // runs a WhatsApp Business account too: link it once with the phone number code.
+        t("whatsapp_business", "WhatsApp Business", "https://web.whatsapp.com/", "#128C7E", "Catalog and customer chat"),
+        t("telegram", "Telegram", "https://web.telegram.org/k/", "#229ED9", "Chats and channels"),
+        t("google", "Google", "https://www.google.com/", "#4285F4", "Search the web"),
         t("canva", "Canva", "https://www.canva.com/", "#00C4CC", "Design posters, flyers and posts"),
         t("linkedin", "LinkedIn", "https://www.linkedin.com/", "#0A66C2", "Professional network"),
         t("zoom", "Zoom", "https://zoom.us/", "#2D8CFF", "Video calls"),
@@ -346,6 +350,25 @@ object AutoDesigner {
         "gmail", "whatsapp_business", "gbusiness", "canva", "gdrive", "gcalendar", "linkedin", "claude",
     )
 
+    /**
+     * Essentials: always on the home screen, whatever business the user picked. They all use
+     * the one account the user signs in with inside Arrow Os (for example one Google account
+     * for Gmail, YouTube, Drive and every "Sign in with Google" button).
+     */
+    val essentialToolIds: List<String> = listOf(
+        "gmail", "whatsapp", "youtube", "tiktok", "facebook", "instagram", "gdrive", "google", "gmaps",
+    )
+
+    val essentials: List<BusinessTool> get() = essentialToolIds.mapNotNull { byId[it] }
+
+    /** The tool among [tools] the user named ("tap open Gmail"), or null. */
+    fun findTool(tools: List<BusinessTool>, spoken: String): BusinessTool? {
+        val said = normalizeWords(spoken).joinToString(" ")
+        if (said.isEmpty()) return null
+        return tools.firstOrNull { normalizeWords(it.label).joinToString(" ") == said }
+            ?: tools.firstOrNull { tool -> tool.id == said.replace(' ', '_') }
+    }
+
     /** A few categories offered as one-tap examples. */
     val popular: List<String> = listOf(
         "Shop", "Restaurant", "Photographer", "Designer", "Content creator", "Teacher", "Doctor", "Lawyer",
@@ -422,12 +445,12 @@ data class HomeSetup(val category: String, val toolIds: List<String>) {
 
     val tools: List<BusinessTool> get() = toolIds.mapNotNull { AutoDesigner.tool(it) }
 
-    /** The ticked tool the user named ("tap open Canva"), or null. */
-    fun findTool(spoken: String): BusinessTool? {
-        val said = AutoDesigner.normalizeWords(spoken).joinToString(" ")
-        if (said.isEmpty()) return null
-        return tools.firstOrNull { AutoDesigner.normalizeWords(it.label).joinToString(" ") == said }
-    }
+    /** The ticked tools that are not already among the essentials. */
+    val businessTools: List<BusinessTool>
+        get() = tools.filter { it.id !in AutoDesigner.essentialToolIds }
+
+    /** The home screen tool the user named ("tap open Canva", "tap open Gmail"), or null. */
+    fun findTool(spoken: String): BusinessTool? = AutoDesigner.findTool(AutoDesigner.essentials + tools, spoken)
 
     fun encode(): String = category.replace("\n", " ") + "\n" + toolIds.joinToString(",")
 
