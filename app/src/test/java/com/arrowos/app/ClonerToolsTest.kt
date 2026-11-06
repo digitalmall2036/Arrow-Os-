@@ -83,6 +83,19 @@ class ClonerToolsTest {
         assertEquals("", ClonerText.read("bad.docx", null, "not a zip".toByteArray()))
     }
 
+    @Test fun findsRelatedFilesOnThePhone() {
+        val index = ArrowFilesIndex()
+        fun add(id: String, name: String) = index.add(
+            ArrowFile(id, name, "whatsapp", FileKind.of(name, null), "x", 1, 1, "", "a/$name", FileStatus.Ready),
+        )
+        add("1", "Rich Dad Poor Dad audiobook.mp3")
+        add("2", "poor people.pdf")
+        add("3", "invoice.pdf")
+        assertEquals(listOf("1"), index.related("rich dad poor dad by robert kiyosaki").map { it.id })
+        assertEquals(listOf("3"), index.related("invoice").map { it.id })
+        assertTrue(index.related("the a").isEmpty())
+    }
+
     private fun zip(vararg entries: Pair<String, String>): ByteArray {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { z ->

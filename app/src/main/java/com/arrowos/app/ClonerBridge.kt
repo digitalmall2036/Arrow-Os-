@@ -35,6 +35,12 @@ class ClonerBridge(private val host: Host) {
         fun clonerToast(text: String)
         fun clonerShowFiles()
         fun clonerRunInBackground(work: () -> Unit)
+        fun clonerListenToPage(url: String, title: String)
+        fun clonerPickAndListen(title: String)
+        fun clonerListenToFile(fileId: String, title: String)
+        fun clonerStopListening()
+        fun clonerSaveLearned(title: String, text: String)
+        fun clonerPhoneFiles(query: String, callbackId: String)
     }
 
     @JavascriptInterface fun loadBrain(): String = host.clonerLoadBrain()
@@ -72,6 +78,18 @@ class ClonerBridge(private val host: Host) {
     @JavascriptInterface fun goHome() = host.clonerGoHome()
     @JavascriptInterface fun toast(text: String) = host.clonerToast(text)
     @JavascriptInterface fun showFiles() = host.clonerShowFiles()
+
+    /** Watch and listen: the video plays on the phone and the mic writes down what it hears. */
+    @JavascriptInterface fun listenToPage(url: String, title: String) = host.clonerListenToPage(url, title)
+    @JavascriptInterface fun pickAndListen(title: String) = host.clonerPickAndListen(title)
+    @JavascriptInterface fun listenToFile(fileId: String, title: String) = host.clonerListenToFile(fileId, title)
+    @JavascriptInterface fun stopListening() = host.clonerStopListening()
+
+    /** Keeps something learned as a text file in Arrow Files ("Arrow Cloner - Learned"). */
+    @JavascriptInterface fun saveLearned(title: String, text: String) = host.clonerSaveLearned(title, text)
+
+    /** Files already on the phone that fit a topic: {files: [{fileId, name, kind, media, text}]}. */
+    @JavascriptInterface fun phoneFiles(query: String, callbackId: String) = host.clonerPhoneFiles(query, callbackId)
 
     companion object {
         private const val MAX_BYTES = 1_500_000

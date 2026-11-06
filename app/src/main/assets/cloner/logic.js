@@ -331,6 +331,28 @@
     'Websites open inside Arrow Os; logins stay signed in.',
   ].join('\n');
 
+  /** Knowledge that came from the phone and the teacher, not from the web. */
+  var PHONE_KINDS = { note: true, file: true, phone: true, heard: true };
+
+  /** Logins stay done; a payment is asked again after 30 days (plans renew monthly). */
+  var PAYMENT_REMEMBER_MS = 30 * 24 * 3600 * 1000;
+
+  /** Marks needs the user already did before (same login, or a payment in the last 30 days). */
+  function applyDoneBefore(plan, brain, now) {
+    var done = brain.doneNeeds || {};
+    plan.needs.forEach(function (n) {
+      var at = done[n.id];
+      if (!at) return;
+      if (n.kind === 'login' || (now || Date.now()) - at < PAYMENT_REMEMBER_MS) { n.done = true; n.before = true; }
+    });
+    return plan;
+  }
+
+  function rememberNeed(brain, need, now) {
+    brain.doneNeeds = brain.doneNeeds || {};
+    if (need.done) brain.doneNeeds[need.id] = now || Date.now(); else delete brain.doneNeeds[need.id];
+  }
+
   function newBrain() {
     return {
       version: 1,
@@ -340,6 +362,7 @@
       knowledge: [{ id: 'arrow-os-manual', kind: 'manual', title: 'How to use Arrow Os', text: ARROW_OS_MANUAL, source: 'built in', addedAt: 0 }],
       lessons: [],
       jobs: [],
+      doneNeeds: {},
     };
   }
 
@@ -353,6 +376,7 @@
     b.knowledge = Array.isArray(b.knowledge) ? b.knowledge : [];
     b.lessons = Array.isArray(b.lessons) ? b.lessons : [];
     b.jobs = Array.isArray(b.jobs) ? b.jobs : [];
+    b.doneNeeds = b.doneNeeds && typeof b.doneNeeds === 'object' ? b.doneNeeds : {};
     // The Arrow Os manual is always there and always up to date.
     b.knowledge = b.knowledge.filter(function (k) { return k.id !== 'arrow-os-manual'; });
     b.knowledge.unshift(fresh.knowledge[0]);
@@ -411,10 +435,12 @@
       }).filter(function (x) { return x.hits > 0; })
         .sort(function (a, b) { return b.hits - a.hits; }).slice(0, 3);
       best.forEach(function (x) { score += x.hits; });
-      if (k.kind === 'note' || k.kind === 'file') score += score > 0 ? 1 : 0; // the teacher's own words count a bit more
+      // What came from the phone (the teacher's files, notes, lessons and what it heard there) is used first, before the web.
+      if (PHONE_KINDS[k.kind]) score *= 2;
       if (score > 0) scored.push({ item: k, score: score, lines: best.map(function (x) { return clip(x.s, 300); }) });
     });
-    scored.sort(function (a, b) { return b.score - a.score; });
+    // Phone first, then the web; best match first within each.
+    scored.sort(function (a, b) { return (PHONE_KINDS[b.item.kind] ? 1 : 0) - (PHONE_KINDS[a.item.kind] ? 1 : 0) || b.score - a.score; });
     return scored.slice(0, max || 4);
   }
 
@@ -689,6 +715,7 @@
     ARROW_OS_MANUAL: ARROW_OS_MANUAL, newBrain: newBrain, loadBrain: loadBrain, learn: learn, forget: forget,
     recall: recall, findLesson: findLesson, lessonSteps: lessonSteps, hostOf: hostOf,
     parseLearn: parseLearn, sourceSearchUrl: sourceSearchUrl,
+    applyDoneBefore: applyDoneBefore, rememberNeed: rememberNeed, PHONE_KINDS: PHONE_KINDS,
     senderOf: senderOf, detectIntent: detectIntent, plan: plan, describeStep: describeStep, claudePrompt: claudePrompt,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

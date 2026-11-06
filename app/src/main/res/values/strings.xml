@@ -142,4 +142,10 @@
     <string name="cloner_your_turn_text">Your turn: %1$s</string>
     <string name="cloner_type_failed">I couldn\'t find the text box. Tap inside it, then tap Try again and I will type.</string>
     <string name="cloner_job_stopped">Stopped</string>
+    <string name="cloner_heard_default">A video</string>
+    <string name="cloner_hearing">🎧 Arrow Cloner is listening to \"%1$s\". Turn the volume up. Tap Stop when it ends.</string>
+    <string name="cloner_hearing_progress">🎧 Listening to \"%1$s\": %2$d words so far. Last heard: %3$s</string>
+    <string name="cloner_hearing_stop">Stop and save</string>
+    <string name="cloner_cant_play">This file can\'t be played on this phone.</string>
+    <string name="cloner_mic_busy">The mic is busy recording a lesson. Stop the lesson first.</string>
 </resources>

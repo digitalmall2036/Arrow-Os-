@@ -26,6 +26,9 @@
       homeTools: function () { return '[]'; }, addTools: function () { }, removeTool: function () { },
       speak: function () { }, listen: function (id) { Cloner.onCallback(id, JSON.stringify({ text: '' })); },
       goHome: function () { }, toast: function (t) { toast(t); }, showFiles: function () { },
+      listenToPage: function () { toast('Listening works on the phone.'); }, pickAndListen: function () { toast('Listening works on the phone.'); },
+      listenToFile: function () { }, stopListening: function () { }, saveLearned: function () { },
+      phoneFiles: function (q, id) { setTimeout(function () { Cloner.onCallback(id, JSON.stringify({ files: [] })); }, 50); },
     };
   }
   var OS = window.ArrowOs;
@@ -54,6 +57,13 @@
   var inspiration = null;
 
   function save() { OS.saveBrain(JSON.stringify(brain)); }
+
+  /** Learns [item] and keeps a copy as a text file in Arrow Files ("Arrow Cloner - Learned"). */
+  function keep(item) {
+    var k = L.learn(brain, item);
+    OS.saveLearned(k.title, k.text);
+    return k;
+  }
 
   function show(name) {
     ['start', 'research', 'hub'].forEach(function (s) { $(s).hidden = s !== name; });
@@ -178,7 +188,7 @@
     var text = [profile.summary, 'What the work is: ' + profile.duties.join('; ') + '.', 'Skills: ' + profile.skills.join('; ') + '.']
       .concat((profile.requirements || []).map(function (r) { return 'Requirement: ' + r; }))
       .concat(results.concat(reqs).map(function (r) { return r.title + ': ' + r.snippet; })).join('\n');
-    L.learn(brain, { kind: 'web', title: 'About being a ' + profile.name.toLowerCase(), text: text, source: 'Arrow Os Google' });
+    keep({ kind: 'web', title: 'About being a ' + profile.name.toLowerCase(), text: text, source: 'Arrow Os Google' });
     save();
     renderProfile();
     $('researchBusy').hidden = true;
@@ -332,12 +342,30 @@
     if (!t) { toast('Tell me what to learn.'); return; }
     learnFrom(t, $('learnLog')).then(function () { renderSetup(); });
   });
-  $('learnWatch').addEventListener('click', function () {
+  // Opens the search in Arrow Os and listens: tap a video, it plays out loud and I write down what is said.
+  $('learnListen').addEventListener('click', function () {
     var t = $('learnInput').value.trim();
-    if (!t) { toast('Tell me what to watch.'); return; }
+    if (!t) { toast('Tell me what to listen to.'); return; }
     var l = L.parseLearn(t);
-    OS.open(L.sourceSearchUrl(l.source, l.query), l.sourceLabel);
+    OS.listenToPage(L.sourceSearchUrl(l.source === 'web' ? 'youtube' : l.source, l.query), l.topic || l.query);
   });
+
+  $('listenPick').addEventListener('click', function () {
+    OS.pickAndListen($('listenTitle').value.trim());
+  });
+
+  function onHeard(data) {
+    show('hub');
+    showTab('teach');
+    if (!data.text) { toast('I didn\'t hear any words. Turn the volume up and try again.'); return; }
+    L.learn(brain, { kind: 'heard', title: 'Heard - ' + data.title, text: data.text, source: 'listened on the phone', fileId: data.fileId || null });
+    save();
+    $('listenTitle').value = '';
+    var words = data.text.split(/\s+/).length;
+    toast('I heard ' + words + ' words about “' + data.title + '” and saved them.');
+    OS.speak('I listened and learned about ' + data.title);
+    renderSetup();
+  }
 
   function logLine(list, text, cls) {
     if (!list) return;
@@ -351,34 +379,48 @@
     var learned = 0;
     if (!l.query) { logLine(log, 'I didn\'t understand what to learn.', 'bad'); return 0; }
 
+    // The phone first: files already in Arrow Files about this.
+    var onPhone = (await nativeAsync('phoneFiles', l.query + ' ' + l.topic)).files || [];
+    onPhone.forEach(function (f) {
+      if (f.text) {
+        L.learn(brain, { kind: 'phone', title: f.name, text: f.text, source: 'on your phone (' + f.source + ')', fileId: f.fileId });
+        learned++;
+        logLine(log, 'Read from your phone: ' + f.name, 'good');
+      } else if (f.media && log) {
+        var li = el('li', { class: 'good' }, ['On your phone: ' + f.name + ' ']);
+        li.appendChild(el('button', { class: 'ghost small-btn', text: 'Play and listen', onclick: function () { OS.listenToFile(f.fileId, f.name); } }));
+        log.appendChild(li);
+      }
+    });
+
     if (l.source === 'youtube') {
       logLine(log, 'Searching YouTube for “' + l.query + '”…');
       var yt = await fetchPage('https://www.youtube.com/results?hl=en&search_query=' + encodeURIComponent(l.query));
       var videos = yt.ok ? L.parseYouTube(yt.body) : [];
       if (videos.length) {
-        L.learn(brain, {
+        keep({
           kind: 'youtube', title: 'YouTube: ' + l.query, source: 'YouTube',
           text: videos.map(function (v) { return v.title + ' (' + v.channel + '): ' + v.description + ' ' + v.url; }).join('\n'),
         });
         learned++;
         logLine(log, 'Read ' + videos.length + ' videos: “' + videos[0].title + '”…', 'good');
       } else {
-        logLine(log, 'Couldn\'t read YouTube right now. Tap “Watch it in Arrow Os” to watch it yourself.', 'bad');
+        logLine(log, 'Couldn\'t read YouTube right now. Tap “Play it and listen” and I\'ll listen to a video instead.', 'bad');
       }
     } else if (l.source !== 'web') {
-      logLine(log, l.sourceLabel + ' needs you signed in to read it, so I\'m reading the web about it instead. Tap “Watch it in Arrow Os” to see it there.');
+      logLine(log, l.sourceLabel + ' needs you signed in to read it, so I\'m reading the web about it instead. Tap “Play it and listen” to listen to it there.');
     }
 
     var about = l.topic && l.topic !== l.query ? l.query + ' ' + l.topic : l.query;
     logLine(log, 'Searching Arrow Os Google for “' + about + '”…');
     var results = await webSearch(about);
     if (results.length) {
-      L.learn(brain, { kind: 'web', title: 'Search: ' + about, source: 'Arrow Os Google', text: results.map(function (r) { return r.title + ': ' + r.snippet; }).join('\n') });
+      keep({ kind: 'web', title: 'Search: ' + about, source: 'Arrow Os Google', text: results.map(function (r) { return r.title + ': ' + r.snippet; }).join('\n') });
       learned++;
     }
     var wiki = await wikipedia(l.topic || l.query);
     if (wiki) {
-      L.learn(brain, { kind: 'web', title: 'Wikipedia: ' + wiki.title, source: wiki.url, text: wiki.extract });
+      keep({ kind: 'web', title: 'Wikipedia: ' + wiki.title, source: wiki.url, text: wiki.extract });
       learned++;
       logLine(log, 'Read Wikipedia: ' + wiki.title, 'good');
     }
@@ -388,7 +430,7 @@
       if (!r.ok) continue;
       var page = L.htmlToText(r.body);
       if (page.text.length < 200) continue;
-      L.learn(brain, { kind: 'web', title: page.title || pages[i].title, source: pages[i].url, text: page.text.slice(0, 20000) });
+      keep({ kind: 'web', title: page.title || pages[i].title, source: pages[i].url, text: page.text.slice(0, 20000) });
       learned++;
       logLine(log, 'Read: ' + (page.title || pages[i].title), 'good');
     }
@@ -403,7 +445,7 @@
   $('noteSave').addEventListener('click', function () {
     var t = $('noteInput').value.trim();
     if (!t) return;
-    L.learn(brain, { kind: 'note', title: L.clip(t, 60), text: t, source: 'you' });
+    keep({ kind: 'note', title: L.clip(t, 60), text: t, source: 'you' });
     save();
     $('noteInput').value = '';
     toast('Saved. I\'ll follow that.');
@@ -514,7 +556,7 @@
     k.slice().reverse().forEach(function (x) {
       var li = el('li', {}, [
         el('div', { class: 'item-head' }, [
-          el('span', { class: 'kind ' + x.kind, text: ({ manual: 'Knows', file: 'File', web: 'Web', youtube: 'YouTube', note: 'Your words' })[x.kind] || x.kind }),
+          el('span', { class: 'kind ' + x.kind, text: ({ manual: 'Knows', file: 'File', web: 'Web', youtube: 'YouTube', note: 'Your words', heard: 'Heard', phone: 'Phone' })[x.kind] || x.kind }),
           el('span', { class: 'item-title', text: x.title }),
           x.kind === 'manual' ? null : el('button', { class: 'del', text: 'Forget', onclick: function (e) { e.stopPropagation(); forgetItem(x.id, x.title); } }),
         ]),
@@ -556,7 +598,7 @@
     $('planGo').disabled = true;
     var insp = await readInspiration();
     $('planGo').disabled = false;
-    currentPlan = L.plan(task, brain, { inspiration: insp });
+    currentPlan = L.applyDoneBefore(L.plan(task, brain, { inspiration: insp }), brain);
     renderPlan();
     OS.speak(currentPlan.say);
   });
@@ -571,7 +613,7 @@
       var li = el('li', { class: n.done ? 'done' : '' });
       var btns = el('div', { class: 'need-btns' });
       if (n.url) btns.appendChild(el('button', { class: 'ghost', text: 'Open', onclick: function () { OS.open(n.url, n.label); } }));
-      btns.appendChild(el('button', { class: 'tick', text: n.done ? 'Done ✓' : 'Done', onclick: function () { n.done = !n.done; renderPlan(); } }));
+      btns.appendChild(el('button', { class: 'tick', text: n.before ? 'Done before ✓' : n.done ? 'Done ✓' : 'Done', onclick: function () { n.done = !n.done; n.before = false; L.rememberNeed(brain, n); save(); renderPlan(); } }));
       li.appendChild(el('span', { class: 'tag ' + n.kind, text: n.kind === 'payment' ? 'Pay' : 'Login' }));
       li.appendChild(el('div', { class: 'need-text' }, [el('div', { class: 'need-label', text: n.label }), el('div', { class: 'need-why', text: n.why })]));
       li.appendChild(btns);
@@ -667,6 +709,7 @@
       var data;
       try { data = JSON.parse(json); } catch (e) { data = {}; }
       if (name === 'lesson') onLesson(data);
+      else if (name === 'heard') onHeard(data);
       else if (name === 'job') onJob(data);
       else if (name === 'shown' && screen === 'hub') showTab(tab);
     },

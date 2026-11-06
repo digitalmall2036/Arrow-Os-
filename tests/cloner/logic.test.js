@@ -179,3 +179,26 @@ test('finds who sent the files', () => {
   assert.strictEqual(L.senderOf('use the photos from John'), 'John');
   assert.strictEqual(L.senderOf('make a website'), '');
 });
+
+test('what came from the phone is used before the web', () => {
+  const b = L.newBrain();
+  L.learn(b, { kind: 'web', title: 'Website tips from the web', text: 'A website should load fast and look good on phones always.' });
+  L.learn(b, { kind: 'heard', title: 'Heard - my course video', text: 'Every website should have a booking button on top.' });
+  const r = L.recall(b, 'make a website');
+  assert.strictEqual(r[0].item.kind, 'heard');
+});
+
+test('logins are remembered; payments for 30 days', () => {
+  const b = L.newBrain();
+  const p1 = L.plan('make a website for Sarah in Claude code', b);
+  const login = p1.needs.find((n) => n.id === 'login-claude');
+  const pay = p1.needs.find((n) => n.id === 'pay-claude');
+  login.done = true; pay.done = true;
+  L.rememberNeed(b, login, 1000); L.rememberNeed(b, pay, 1000);
+  const again = L.applyDoneBefore(L.plan('make a website for John', b), b, 1000 + 24 * 3600 * 1000);
+  assert.ok(again.needs.find((n) => n.id === 'login-claude').before);
+  assert.ok(again.needs.find((n) => n.id === 'pay-claude').done);
+  const later = L.applyDoneBefore(L.plan('make a website for John', b), b, 1000 + 40 * 24 * 3600 * 1000);
+  assert.ok(later.needs.find((n) => n.id === 'login-claude').done);
+  assert.ok(!later.needs.find((n) => n.id === 'pay-claude').done);
+});

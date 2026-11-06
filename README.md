@@ -33,8 +33,15 @@ profession, learns how *you* work, and then does jobs inside Arrow Os.
      into its brain; pictures and videos are kept in Arrow Files for jobs.
    - *Learn from YouTube, social media or the web*: e.g. "go to YouTube search rich dad poor
      dad by Robert Kiyosaki and learn about financial literacy". It reads the YouTube results
-     and web pages about it. (It reads what is written; it can't listen to a video's sound.)
+     and web pages about it. 
+   - *Watch and listen*: a video or audio from the phone (or a YouTube video in Arrow Os) plays
+     out loud while the microphone writes down what is said. Turn the volume up.
    - *Tell it how you do things*: notes it follows in every job.
+
+   It looks on the phone first (files in Arrow Files about the topic), then on the web, and uses
+   what came from the phone first in jobs. Everything it learns is also saved as text files in
+   Arrow Files, folder **Arrow Cloner - Learned**; uploads and lesson videos go in
+   **Arrow Cloner - From phone**.
 3. **Tools**: search any tool (or type a website address) and add it. Tools go on the Arrow
    Os home screen too.
 4. **Work**: give it a job by voice or text, optionally with an inspiration website or file.

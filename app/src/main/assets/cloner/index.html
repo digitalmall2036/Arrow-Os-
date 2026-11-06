@@ -141,15 +141,24 @@
             <textarea id="learnInput" rows="3" placeholder="e.g. go to YouTube search rich dad poor dad by Robert Kiyosaki and learn about financial literacy"></textarea>
             <button class="icon-btn mic" data-mic="learnInput" aria-label="Speak"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg></button>
           </div>
+          <p class="small muted">I look on your phone first, then on the web.</p>
           <div class="row-btns">
-            <button class="primary" id="learnGo">Learn it</button>
-            <button class="ghost" id="learnWatch">Watch it in Arrow Os</button>
+            <button class="primary" id="learnGo">Read about it</button>
+            <button class="ghost" id="learnListen">Play it and listen</button>
           </div>
           <ul class="log" id="learnLog"></ul>
         </article>
 
         <article class="card">
-          <h3><span class="num">4</span> Tell it how you do things</h3>
+          <h3><span class="num">4</span> Watch and listen to a video or audio</h3>
+          <p class="small muted">The video plays on the phone with the sound on the speaker. The microphone listens and I write down everything said. What I hear is saved in Arrow Files, in the “Arrow Cloner - Learned” folder.</p>
+          <input id="listenTitle" type="text" placeholder="What is it about? e.g. My pricing course" autocomplete="off">
+          <button class="primary wide" id="listenPick">Pick a video or audio from my phone</button>
+          <p class="small muted">Tip: turn the volume up and keep the phone in a quiet place.</p>
+        </article>
+
+        <article class="card">
+          <h3><span class="num">5</span> Tell it how you do things</h3>
           <textarea id="noteInput" rows="3" placeholder="e.g. Every website I make has a WhatsApp button and a dark blue header."></textarea>
           <button class="ghost wide" id="noteSave">Save to its brain</button>
         </article>
