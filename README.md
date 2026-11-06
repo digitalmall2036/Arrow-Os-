@@ -17,6 +17,49 @@ These are the apps' **websites** (their mobile sites), not the installed apps. E
 out to another app. Links that try to jump to the real YouTube/Facebook/etc. app are
 kept inside Arrow Os.
 
+## Arrow Cloner: your digital worker
+
+Arrow Cloner is the first screen after signing in. It becomes a digital worker for your
+profession, learns how *you* work, and then does jobs inside Arrow Os.
+
+1. **Name the professional** (for example *Website developer*). Arrow Cloner reads about
+   the work on the web (Wikipedia and a DuckDuckGo search, both free) and shows what the
+   work is, the skills and requirements, and the logins and payments it needs.
+2. **Teach your digital worker**:
+   - *Record me while I work*: records the screen (and your voice) while you work in
+     Arrow Os, and writes down every command and page. The video is saved in Arrow Files.
+     Next time you ask for that job, it repeats your steps.
+   - *Upload files or a folder*: text, web pages, Word, PowerPoint and Excel files are read
+     into its brain; pictures and videos are kept in Arrow Files for jobs.
+   - *Learn from YouTube, social media or the web*: e.g. "go to YouTube search rich dad poor
+     dad by Robert Kiyosaki and learn about financial literacy". It reads the YouTube results
+     and web pages about it. 
+   - *Watch and listen*: a video or audio from the phone (or a YouTube video in Arrow Os) plays
+     out loud while the microphone writes down what is said. Turn the volume up.
+   - *Tell it how you do things*: notes it follows in every job.
+
+   It looks on the phone first (files in Arrow Files about the topic), then on the web, and uses
+   what came from the phone first in jobs. Everything it learns is also saved as text files in
+   Arrow Files, folder **Arrow Cloner - Learned**; uploads and lesson videos go in
+   **Arrow Cloner - From phone**.
+3. **Tools**: search any tool (or type a website address) and add it. Tools go on the Arrow
+   Os home screen too.
+4. **Work**: give it a job by voice or text, optionally with an inspiration website or file.
+   It answers "I'm on it", lists the logins and payments to do first (it never pays or signs
+   in for you), then runs the steps inside Arrow Os. Steps only a person can do (picking
+   photos, scanning a QR code, approving) show as *Your turn* with a Continue button.
+
+**Audio talker:** anywhere there is a lot to read (what the work is, what it just learned,
+each thing in its brain, each lesson, and a job's plan) there is a **▶ Play audio** button.
+It reads the text out loud with the phone's own voice; tap **■ Stop** to stop. Links are said
+as "a link". It works offline once the phone's text-to-speech voice is installed.
+
+The worker's brain is saved on the phone per account (`files/cloner/<account>.json`). No paid
+AI is used: the planner is rule-based, and creative work (like building a website) is handed
+to the tools you pick, such as Claude Code, with a prompt built from what you taught.
+The page lives in `app/src/main/assets/cloner/`; its logic is tested with
+`node --test tests/cloner/*.test.js`.
+
 ## Auto Designer: Arrow Business Os
 
 The first time Arrow Os opens, a welcome bar says **"Welcome to Arrow Business Os.

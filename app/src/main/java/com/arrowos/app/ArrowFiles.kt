@@ -115,6 +115,20 @@ class ArrowFilesIndex {
         }
     }
 
+    /**
+     * Files whose name or folder share words with [query], best match first: "rich dad poor dad"
+     * finds "Rich Dad Poor Dad audiobook.mp3". Short words like "the" don't count.
+     */
+    fun related(query: String, max: Int = 8): List<ArrowFile> {
+        val words = simplify(query).split(' ').filter { it.length > 2 }.distinct()
+        if (words.isEmpty()) return emptyList()
+        val need = if (words.size <= 2) words.size else 2
+        return active.map { f ->
+            val hay = simplify("${f.name.substringBeforeLast('.')} ${f.source}").split(' ').toSet()
+            f to words.count { it in hay }
+        }.filter { it.second >= need }.sortedByDescending { it.second }.take(max).map { it.first }
+    }
+
     fun add(file: ArrowFile) {
         files.removeAll { it.id == file.id }
         files.add(file)

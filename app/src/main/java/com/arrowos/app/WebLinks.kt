@@ -24,6 +24,42 @@ object WebLinks {
         }
     }
 
+    const val WHATSAPP_WEB = "https://web.whatsapp.com/"
+
+    /**
+     * WhatsApp inside Arrow Os is always WhatsApp Web. Any other WhatsApp address (the
+     * business.whatsapp.com advert page, wa.me chat links, group invites, whatsapp:// links)
+     * becomes the matching WhatsApp Web address. Returns null for anything else, and for
+     * WhatsApp's help and blog pages, which work as normal websites.
+     */
+    fun whatsAppWebFor(url: String): String? {
+        val u = url.trim()
+        val scheme = u.substringBefore("://", "").lowercase()
+        val rest = u.substringAfter("://", "")
+        val host = rest.substringBefore('/').substringBefore('?').substringBefore('#').lowercase().removePrefix("www.")
+        val path = rest.removePrefix(rest.substringBefore('/').substringBefore('?')).substringBefore('#')
+        val query = u.substringAfter('?', "").substringBefore('#')
+        fun send(q: String) = if (q.isBlank()) WHATSAPP_WEB else "${WHATSAPP_WEB}send?$q"
+        return when {
+            scheme == "whatsapp" -> send(query)
+            scheme != "http" && scheme != "https" -> null
+            host == "web.whatsapp.com" -> null // already WhatsApp Web
+            host == "wa.me" -> {
+                val phone = path.trim('/').substringBefore('?').filter { it.isDigit() }
+                val q = listOfNotNull(phone.takeIf { it.isNotEmpty() }?.let { "phone=$it" }, query.takeIf { it.isNotBlank() })
+                send(q.joinToString("&"))
+            }
+            host == "api.whatsapp.com" -> send(query)
+            host == "chat.whatsapp.com" -> path.trim('/').substringBefore('?').takeIf { it.isNotEmpty() }
+                ?.let { "${WHATSAPP_WEB}accept?code=$it" } ?: WHATSAPP_WEB
+            host == "whatsapp.com" || host == "business.whatsapp.com" || host == "m.whatsapp.com" -> WHATSAPP_WEB
+            else -> null
+        }
+    }
+
+    fun isWhatsAppWeb(url: String?): Boolean =
+        url != null && url.substringAfter("://", "").substringBefore('/').substringBefore('?').lowercase() == "web.whatsapp.com"
+
     /**
      * Other addresses that serve the same site, tried in order when one can't be
      * reached. Some networks block m.facebook.com but not web. or mbasic.

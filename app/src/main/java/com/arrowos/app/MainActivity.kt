@@ -19,7 +19,11 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.media.projection.MediaProjectionManager
+import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.provider.OpenableColumns
+import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.text.format.DateUtils
@@ -58,11 +62,15 @@ import com.arrowos.app.databinding.ItemAppTileBinding
 import com.arrowos.app.databinding.ItemArrowFileBinding
 import com.arrowos.app.databinding.ItemDesignerToolBinding
 import com.arrowos.app.databinding.ItemPreviousTabBinding
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 
-class MainActivity : AppCompatActivity(), VoiceController.Listener {
+class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge.Host {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var voice: VoiceController
@@ -148,6 +156,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private val handler = Handler(Looper.getMainLooper())
 
     private var fullscreenView: View? = null
+
+    /** The browser's own phone user agent (set in setupBrowser), used for every site but WhatsApp Web. */
+    private var phoneUa: String? = null
+    private fun phoneUserAgent(): String = phoneUa ?: binding.webView.settings.userAgentString
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -177,6 +189,12 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         setupVoiceBar()
         setupBackHandling()
         setupTts()
+        setupCloner()
+        try {
+            getSystemService(android.net.ConnectivityManager::class.java)?.registerDefaultNetworkCallback(networkBack)
+        } catch (e: Exception) {
+            // Without it WhatsApp Web still reconnects on its timer.
+        }
 
         val uid = cloud.uid
         if (uid != null) beginSession(uid) else showSignIn()
@@ -185,7 +203,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     override fun onResume() {
         super.onResume()
         binding.webView.onResume()
-        if (!userMuted && accountUid != null) ensureMicPermissionThenListen(userAsked = false)
+        if (!userMuted && accountUid != null && !recordingWithMic) ensureMicPermissionThenListen(userAsked = false)
     }
 
     override fun onPause() {
@@ -199,6 +217,16 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         handler.removeCallbacksAndMessages(null)
         unregisterReceiver(downloadDone)
         cloudWorker.shutdown()
+        waHandler.removeCallbacksAndMessages(null)
+        try {
+            getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(networkBack)
+        } catch (e: Exception) {
+        }
+        clonerWorker.shutdown()
+        brainWriter.shutdown()
+        jobHandler.removeCallbacksAndMessages(null)
+        ScreenRecordService.onFinished = null
+        binding.clonerWeb.destroy()
         voice.destroy()
         tts?.shutdown()
         binding.webView.destroy()
@@ -220,7 +248,21 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         val setup = homeSetup
         val tools = setup?.tools.orEmpty()
         val inflater = LayoutInflater.from(this)
-        // Arrow Files is always the first app, whatever business the user picked.
+        // Arrow Cloner, the digital worker, is always first; Arrow Files comes next.
+        val clonerTile = ItemAppTileBinding.inflate(inflater, binding.appGrid, false)
+        clonerTile.appIcon.text = ""
+        // Mj's Arrow AI Cloner logo, in a round tile like the other apps.
+        clonerTile.appIcon.backgroundTintList = null
+        clonerTile.appIcon.background = ContextCompat.getDrawable(this, R.drawable.cloner_logo)
+        clonerTile.appIcon.outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: android.graphics.Outline) = outline.setOval(0, 0, view.width, view.height)
+        }
+        clonerTile.appIcon.clipToOutline = true
+        clonerTile.appLabel.text = getString(R.string.cloner_title)
+        clonerTile.root.contentDescription = getString(R.string.open_app, getString(R.string.cloner_title))
+        clonerTile.root.setOnClickListener { showCloner() }
+        binding.appGrid.addView(clonerTile.root)
+        // Arrow Files is always there too, whatever business the user picked.
         val filesTile = ItemAppTileBinding.inflate(inflater, binding.appGrid, false)
         filesTile.appIcon.text = ""
         filesTile.appIcon.setCompoundDrawablesWithIntrinsicBounds(0, R.drawable.ic_folder, 0, 0)
@@ -253,8 +295,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     }
 
     private fun showHome() {
+        stopWhatsAppRetry()
         hidePrevious()
         hideFiles()
+        hideCloner()
         if (homeSetup == null) showDesigner()
         currentApp = null
         binding.homeScreen.isVisible = true
@@ -289,6 +333,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 .replace("; wv", "")
                 .replace(Regex("Version/\\d+(\\.\\d+)* "), "")
         }
+        phoneUa = binding.webView.settings.userAgentString
 
         // Files (for example APKs from 9apps) download with Android's download manager.
         binding.webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
@@ -305,6 +350,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
             override fun onPageFinished(view: WebView, url: String?) {
                 binding.pageProgress.isVisible = false
+                // WhatsApp Web came up: stop the reconnect timer.
+                if (url != null && url != errorPageUrl && WebLinks.isWhatsAppWeb(url)) stopWhatsAppRetry()
                 if (url != errorPageUrl && previous.updateTitle(url, view.title)) savePrevious()
                 // On a website (not one of the five apps) show the page's name.
                 if (currentApp == null && binding.browserScreen.isVisible) {
@@ -382,7 +429,20 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     /** Keeps every link inside Arrow Os. Returns true when the WebView should NOT load [url] itself. */
     private fun handleUrl(view: WebView, url: String): Boolean {
-        if (url.startsWith("http://") || url.startsWith("https://")) return false
+        // Every WhatsApp link stays in WhatsApp Web, inside Arrow Os.
+        WebLinks.whatsAppWebFor(url)?.let { web ->
+            useUserAgentFor(web)
+            view.loadUrl(web)
+            return true
+        }
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            // Moving into or out of WhatsApp Web needs the other browser name first.
+            if (useUserAgentFor(url)) {
+                view.loadUrl(url)
+                return true
+            }
+            return false
+        }
         if (url.startsWith("intent://")) {
             // Sites try to bounce to the real app; use their web fallback instead.
             val fallback = try {
@@ -425,13 +485,18 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     private fun load(url: String, freshHistory: Boolean) {
         hidePrevious()
         hideDesigner()
+        hideCloner()
+        recordLessonEvent(JSONObject().put("kind", "open").put("url", url).put("title", binding.browserTitle.text.toString()))
         errorPageUrl = null
         binding.homeScreen.isVisible = false
         binding.browserScreen.isVisible = true
         pendingAlternatives.clear()
         triedAlternatives = false
         if (freshHistory) resetHistoryOnNextPage = true
-        binding.webView.loadUrl(url)
+        stopWhatsAppRetry()
+        val target = WebLinks.whatsAppWebFor(url) ?: url
+        useUserAgentFor(target)
+        binding.webView.loadUrl(target)
     }
 
     /**
@@ -440,6 +505,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
      */
     private fun handleLoadFailure(view: WebView, failed: Uri, errorCode: Int, description: String) {
         val host = failed.host ?: ""
+        if (WebLinks.isWhatsAppWeb(failed.toString())) {
+            // WhatsApp Web never shows the failure page: it waits and reconnects by itself.
+            retryWhatsApp(view, failed.toString())
+            return
+        }
         if (!triedAlternatives) {
             triedAlternatives = true
             pendingAlternatives = WebLinks.alternativesFor(host).filter { it != host }.toMutableList()
@@ -451,6 +521,72 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             return
         }
         showErrorPage(view, failed.toString(), host, errorCode, description)
+    }
+
+    // ----- WhatsApp Web: keeps reconnecting instead of failing -----
+
+    private val waHandler = Handler(Looper.getMainLooper())
+    private var waRetryUrl: String? = null
+    private var waRetries = 0
+
+    /** Shows a calm "connecting" page and tries WhatsApp Web again, sooner when the internet comes back. */
+    private fun retryWhatsApp(view: WebView, url: String) {
+        if (waRetryUrl != url) waRetries = 0
+        waRetryUrl = url
+        val wait = WHATSAPP_RETRY_MS[minOf(waRetries, WHATSAPP_RETRY_MS.size - 1)]
+        waRetries++
+        val html = """
+            <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>body{background:#0B0F1A;color:#fff;font-family:sans-serif;padding:32px 28px;line-height:1.5;text-align:center}
+            .s{width:44px;height:44px;margin:40px auto 24px;border-radius:50%;border:4px solid #26304A;border-top-color:#25D366;animation:r 1s linear infinite}
+            @keyframes r{to{transform:rotate(360deg)}}h2{color:#25D366;font-weight:600}small{color:#9AA4BF}</style></head>
+            <body><div class="s"></div><h2>${Html.escapeHtml(getString(R.string.wa_connecting))}</h2>
+            <p>${Html.escapeHtml(getString(R.string.wa_connecting_text, (wait / 1000).toInt()))}</p>
+            <small>${Html.escapeHtml(getString(R.string.wa_connecting_tip))}</small></body></html>
+        """.trimIndent()
+        errorPageUrl = url
+        view.loadDataWithBaseURL(null, html, "text/html", "utf-8", url)
+        waHandler.removeCallbacksAndMessages(null)
+        waHandler.postDelayed({ reconnectWhatsApp() }, wait)
+    }
+
+    private fun reconnectWhatsApp() {
+        val url = waRetryUrl ?: return
+        if (!binding.browserScreen.isVisible) return // the user left; try again when they come back
+        waHandler.removeCallbacksAndMessages(null)
+        errorPageUrl = null // this load is the real page again
+        useUserAgentFor(url)
+        binding.webView.loadUrl(url)
+    }
+
+    private fun stopWhatsAppRetry() {
+        waHandler.removeCallbacksAndMessages(null)
+        waRetryUrl = null
+        waRetries = 0
+    }
+
+    /** The internet came back: reconnect WhatsApp Web straight away instead of waiting. */
+    private val networkBack = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) {
+            runOnUiThread { if (waRetryUrl != null) reconnectWhatsApp() }
+        }
+    }
+
+    /**
+     * WhatsApp Web only opens for a computer browser, so it gets one (with this phone's real Chrome
+     * version, so WhatsApp never says the browser is too old). Every other site gets the phone one.
+     * Returns true when the browser name had to change.
+     */
+    private fun useUserAgentFor(url: String): Boolean {
+        val want = if (WebLinks.isWhatsAppWeb(url)) desktopUserAgent() else phoneUserAgent()
+        if (binding.webView.settings.userAgentString == want) return false
+        binding.webView.settings.userAgentString = want
+        return true
+    }
+
+    private fun desktopUserAgent(): String {
+        val chrome = Regex("Chrome/[\\d.]+").find(phoneUserAgent())?.value ?: "Chrome/124.0.0.0"
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) $chrome Safari/537.36"
     }
 
     private fun showErrorPage(view: WebView, url: String, host: String, errorCode: Int, description: String) {
@@ -631,7 +767,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private fun goBack() {
         when {
+            heardTitle != null -> stopHearing()
             fullscreenView != null -> exitFullscreen()
+            binding.clonerScreen.isVisible -> binding.clonerWeb.evaluateJavascript("window.Cloner?Cloner.back():false") { handled ->
+                if (handled != "true") showHome()
+            }
             binding.designerScreen.isVisible -> if (homeSetup != null) hideDesigner()
             binding.previousScreen.isVisible -> hidePrevious()
             binding.filesScreen.isVisible && filesShowTrash -> {
@@ -649,8 +789,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             override fun handleOnBackPressed() {
                 val firstDesign = (binding.designerScreen.isVisible && homeSetup == null) || binding.signInScreen.isVisible
                 val onHome = binding.homeScreen.isVisible && !binding.designerScreen.isVisible && !binding.previousScreen.isVisible &&
-                    !binding.filesScreen.isVisible
-                if (fullscreenView == null && (onHome || firstDesign)) {
+                    !binding.filesScreen.isVisible && !binding.clonerScreen.isVisible
+                if (fullscreenView == null && heardTitle == null && (onHome || firstDesign)) {
                     // On the Arrow Os home screen, back leaves the app as usual.
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -1021,7 +1161,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
         uploadWaitingFiles()
         showHome()
-        if (!userMuted) ensureMicPermissionThenListen(userAsked = false)
+        // After signing in, Arrow Cloner (the digital worker) is the first thing the user sees.
+        clonerLoaded = false
+        showCloner()
     }
 
     /**
@@ -1061,6 +1203,12 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     }
 
     private fun signOut() {
+        stopJob(finished = false)
+        heardTitle = null
+        stopMedia()
+        if (ScreenRecordService.running) ScreenRecordService.stop(this)
+        hideCloner()
+        clonerLoaded = false
         cloud.signOut()
         accountUid = null
         filesUser = ArrowFilesIndex.LOCAL_USER
@@ -1426,7 +1574,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
      */
     private fun handleInput(text: String, typed: Boolean) {
         // The Auto Designer has its own text box; the always-on mic waits until it is closed.
-        if (binding.designerScreen.isVisible || binding.signInScreen.isVisible) return
+        if (binding.designerScreen.isVisible || binding.signInScreen.isVisible || binding.clonerScreen.isVisible) return
         val commands = CommandParser.parseAll(text)
         if (commands.singleOrNull() is Command.Ignored) {
             // Not a command: do nothing. Only a typed line gets a hint, since the
@@ -1436,6 +1584,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
             return
         }
         binding.voiceStatus.text = "“$text”"
+        recordLessonEvent(JSONObject().put("kind", "cmd").put("text", text.trim()))
         handler.removeCallbacksAndMessages(null) // a new instruction replaces an unfinished sequence
         runSequence(commands, 0)
     }
@@ -1477,10 +1626,15 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
     }
 
     override fun onPartialText(text: String) {
+        if (heardTitle != null) return
         binding.voiceStatus.text = "“$text”"
     }
 
-    override fun onPhrase(text: String) = handleInput(text, typed = false)
+    override fun onPhrase(text: String) {
+        // While Arrow Cloner is listening to a video, what the mic hears is a note, not a command.
+        if (hearPhrase(text)) return
+        handleInput(text, typed = false)
+    }
 
     override fun onVoiceUnavailable() {
         binding.voiceStatus.text = getString(R.string.voice_unavailable)
@@ -1512,6 +1666,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 }
             }
             is Command.OpenWebsite -> {
+                if (isClonerName(command.target)) {
+                    confirm(getString(R.string.say_opening, getString(R.string.cloner_title)))
+                    showCloner()
+                    return
+                }
                 homeSetup?.findTool(command.target)?.let { tool ->
                     confirm(getString(R.string.say_opening, tool.label))
                     openTool(tool)
@@ -1566,6 +1725,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
                 val spoken = CommandParser.normalize(command.spoken)
                 val toolName = Regex("^(?:open|launch|start|go to|switch to|visit|take me to) (.+)$")
                     .find(spoken)?.groupValues?.get(1) ?: spoken.takeIf { !inApp && !binding.previousScreen.isVisible }
+                if (toolName != null && isClonerName(toolName)) {
+                    confirm(getString(R.string.say_opening, getString(R.string.cloner_title)))
+                    showCloner()
+                    return
+                }
                 val tool = toolName?.let { homeSetup?.findTool(it.removeSuffix(" app")) }
                 if (tool != null) {
                     confirm(getString(R.string.say_opening, tool.label))
@@ -1700,11 +1864,861 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         }
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) = resumeMic()
+            override fun onDone(utteranceId: String?) = spoken(utteranceId, ok = true)
             @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) = resumeMic()
-            override fun onError(utteranceId: String?, errorCode: Int) = resumeMic()
+            override fun onError(utteranceId: String?) = spoken(utteranceId, ok = false)
+            override fun onError(utteranceId: String?, errorCode: Int) = spoken(utteranceId, ok = false)
+            override fun onStop(utteranceId: String?, interrupted: Boolean) = spoken(utteranceId, ok = false)
         })
+    }
+
+    /** One piece of speech ended. Read-aloud pieces are named "read|<id>|<n>|<count>". */
+    private fun spoken(utteranceId: String?, ok: Boolean) {
+        val parts = utteranceId?.split('|')
+        if (parts == null || parts.size != 4 || parts[0] != "read") {
+            resumeMic()
+            return
+        }
+        val last = parts[2] == parts[3]
+        if (ok && !last) return
+        runOnUiThread {
+            if (readingId != parts[1]) return@runOnUiThread
+            readingId = null
+            clonerEvent("reading", JSONObject().put("id", parts[1]).put("state", if (ok) "done" else "stopped"))
+            resumeMic()
+        }
+    }
+
+    // ---------- Arrow Cloner (the digital worker) ----------
+
+    /** Background line for the worker's web reading and file imports. */
+    private val clonerWorker = Executors.newFixedThreadPool(3)
+    /** Saves the worker's brain one write at a time, in order. */
+    private val brainWriter = Executors.newSingleThreadExecutor()
+
+    /** The cloner page was loaded for the account that is signed in now. */
+    private var clonerLoaded = false
+
+    private var pendingPickCallback: String? = null
+    private var pendingListenCallback: String? = null
+    private val pickDocuments = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        importForCloner(uris.map { PickedFile(it, null, null, -1L) }, folder = false)
+    }
+    private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+        if (tree == null) importForCloner(emptyList(), folder = true) else {
+            clonerWorker.execute {
+                val found = filesInTree(tree)
+                runOnUiThread { importForCloner(found, folder = true) }
+            }
+        }
+    }
+    private val listenOnce = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val heard = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull().orEmpty()
+        pendingListenCallback?.let { clonerCallback(it, JSONObject().put("text", heard).toString()) }
+        pendingListenCallback = null
+    }
+
+    // A lesson: the teacher works while Arrow Cloner records the screen and every step.
+    private var lessonTitle: String? = null
+    private var lessonPath: String? = null
+    private var lessonRelPath: String? = null
+    private var lessonEvents = JSONArray()
+    private var lessonWithMic = false
+    private var recordingWithMic = false
+    private val screenCapture = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val path = lessonPath
+        if (result.resultCode != RESULT_OK || result.data == null || path == null) {
+            lessonTitle = null
+            clonerEvent("lesson", JSONObject().put("ok", false).put("error", getString(R.string.cloner_record_refused)))
+            return@registerForActivityResult
+        }
+        val intent = Intent(this, ScreenRecordService::class.java)
+            .putExtra(ScreenRecordService.EXTRA_CODE, result.resultCode)
+            .putExtra(ScreenRecordService.EXTRA_DATA, result.data)
+            .putExtra(ScreenRecordService.EXTRA_PATH, path)
+            .putExtra(ScreenRecordService.EXTRA_AUDIO, lessonWithMic)
+        try {
+            ContextCompat.startForegroundService(this, intent)
+        } catch (e: Exception) {
+            lessonTitle = null
+            clonerEvent("lesson", JSONObject().put("ok", false).put("error", e.message ?: "could not start"))
+            return@registerForActivityResult
+        }
+        lessonEvents = JSONArray()
+        if (lessonWithMic) {
+            // The phone's microphone can only do one thing: the lesson video gets it.
+            recordingWithMic = true
+            voice.stop()
+        }
+        showWorkerBar(getString(R.string.cloner_recording, lessonTitle.orEmpty()), getString(R.string.cloner_stop_recording), onStop = {
+            ScreenRecordService.stop(this)
+        })
+        showHome()
+    }
+    private val recordMicPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        lessonWithMic = granted
+        askForScreenCapture()
+    }
+
+    // A job: the steps of a task the worker runs inside Arrow Os.
+    private val jobHandler = Handler(Looper.getMainLooper())
+    private var jobSteps: List<JSONObject> = emptyList()
+    private var jobIndex = -1
+    private var jobRunning = false
+
+    private class PickedFile(val uri: Uri, val name: String?, val mime: String?, val size: Long, val folder: String = "")
+
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
+    private fun setupCloner() {
+        binding.clonerWeb.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = false
+            allowContentAccess = false
+            mediaPlaybackRequiresUserGesture = true
+        }
+        binding.clonerWeb.setBackgroundColor(ContextCompat.getColor(this, R.color.bg_dark))
+        binding.clonerWeb.addJavascriptInterface(ClonerBridge(this), "ArrowOs")
+        binding.clonerWeb.webChromeClient = WebChromeClient() // lets the page ask "Forget this?"
+        binding.clonerWeb.webViewClient = object : WebViewClient() {
+            // Links on the cloner page open in Arrow Os's browser, never inside the cloner page.
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val url = request.url.toString()
+                if (url.startsWith("http://") || url.startsWith("https://")) openWebsite(url, request.url.host ?: url)
+                return true
+            }
+        }
+        binding.workerBarStop.setOnClickListener { workerBarStop?.invoke() }
+        binding.workerBarContinue.setOnClickListener { workerBarContinue?.invoke() }
+        ScreenRecordService.onFinished = { ok, path -> onLessonRecorded(ok, path) }
+    }
+
+    private fun isClonerName(text: String): Boolean = CommandParser.normalize(text).removeSuffix(" app").trim() in clonerNames
+
+    private fun showCloner() {
+        if (accountUid == null) return
+        exitFullscreen()
+        hidePrevious()
+        hideFiles()
+        binding.designerScreen.isVisible = false
+        binding.clonerScreen.isVisible = true
+        binding.commandBar.isVisible = false
+        voice.paused = true
+        if (!clonerLoaded) {
+            clonerLoaded = true
+            binding.clonerWeb.loadUrl(CLONER_PAGE)
+        } else {
+            clonerEvent("shown", JSONObject())
+        }
+    }
+
+    private fun hideCloner() {
+        if (!binding.clonerScreen.isVisible) return
+        stopReading()
+        binding.clonerScreen.isVisible = false
+        binding.commandBar.isVisible = true
+        hideKeyboard(binding.clonerWeb)
+        voice.paused = false
+        if (!userMuted && !recordingWithMic && accountUid != null) ensureMicPermissionThenListen(userAsked = false)
+    }
+
+    /** Sends an event to the cloner page: Cloner.onEvent(name, data). */
+    private fun clonerEvent(name: String, data: JSONObject) {
+        binding.clonerWeb.evaluateJavascript(
+            "window.Cloner&&Cloner.onEvent(${JSONObject.quote(name)},${JSONObject.quote(data.toString())})", null,
+        )
+    }
+
+    override fun clonerCallback(id: String, json: String) = runOnUiThread {
+        binding.clonerWeb.evaluateJavascript("window.Cloner&&Cloner.onCallback(${JSONObject.quote(id)},${JSONObject.quote(json)})", null)
+    }
+
+    private fun brainFile(): File? = accountUid?.let { File(filesDir, "cloner/${ArrowFilesIndex.safeFileName(it)}.json") }
+
+    override fun clonerLoadBrain(): String = try {
+        brainFile()?.takeIf { it.exists() }?.readText() ?: ""
+    } catch (e: Exception) {
+        ""
+    }
+
+    override fun clonerSaveBrain(json: String) {
+        val file = brainFile() ?: return
+        brainWriter.execute {
+            try {
+                file.parentFile?.mkdirs()
+                val tmp = File(file.parentFile, file.name + ".tmp")
+                tmp.writeText(json)
+                if (!tmp.renameTo(file)) {
+                    file.writeText(json)
+                    tmp.delete()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { toast(getString(R.string.cloner_save_failed)) }
+            }
+        }
+    }
+
+    override fun clonerAccount(): String =
+        JSONObject().put("uid", accountUid ?: "").put("email", cloud.email ?: "").toString()
+
+    override fun clonerRunInBackground(work: () -> Unit) {
+        try {
+            clonerWorker.execute(work)
+        } catch (e: Exception) {
+            // Shutting down.
+        }
+    }
+
+    override fun clonerToast(text: String) = runOnUiThread { toast(text) }
+
+    override fun clonerSpeak(text: String) = runOnUiThread { confirm(text) }
+
+    /** The text the worker is reading out loud now, by the page's id for it. */
+    private var readingId: String? = null
+
+    override fun clonerReadAloud(text: String, id: String) = runOnUiThread {
+        val engine = tts
+        if (!ttsReady || engine == null) {
+            toast(getString(R.string.cloner_no_voice))
+            clonerEvent("reading", JSONObject().put("id", id).put("state", "stopped"))
+            return@runOnUiThread
+        }
+        val max = (TextToSpeech.getMaxSpeechInputLength() - 100).coerceIn(500, 3000)
+        val chunks = ClonerText.speechChunks(text, max)
+        if (chunks.isEmpty()) {
+            clonerEvent("reading", JSONObject().put("id", id).put("state", "stopped"))
+            return@runOnUiThread
+        }
+        readingId?.let { clonerEvent("reading", JSONObject().put("id", it).put("state", "stopped")) }
+        readingId = id
+        voice.paused = true // don't let the mic hear the worker reading
+        chunks.forEachIndexed { i, chunk ->
+            val mode = if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            engine.speak(chunk, mode, null, "read|$id|${i + 1}|${chunks.size}")
+        }
+        clonerEvent("reading", JSONObject().put("id", id).put("state", "start"))
+    }
+
+    override fun clonerStopReading() = runOnUiThread { stopReading() }
+
+    private fun stopReading() {
+        val id = readingId ?: return
+        readingId = null
+        tts?.stop()
+        clonerEvent("reading", JSONObject().put("id", id).put("state", "stopped"))
+        resumeMic()
+    }
+
+    override fun clonerGoHome() = runOnUiThread { showHome() }
+
+    override fun clonerShowFiles() = runOnUiThread {
+        hideCloner()
+        showFiles()
+    }
+
+    override fun clonerOpen(url: String, title: String) = runOnUiThread {
+        if (!url.startsWith("https://") && !url.startsWith("http://")) return@runOnUiThread
+        val app = ArrowApp.fromUrl(url)
+        if (app != null) openApp(app, url) else openWebsite(url, title.ifBlank { Uri.parse(url).host ?: url })
+        // Show the way back while the user signs in, pays or looks around.
+        if (!jobRunning && !ScreenRecordService.running) {
+            showWorkerBar(getString(R.string.cloner_back_hint), getString(R.string.cloner_back), onStop = {
+                hideWorkerBar()
+                showCloner()
+            })
+        }
+    }
+
+    override fun clonerListen(callbackId: String) = runOnUiThread {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.cloner_listen_prompt))
+        pendingListenCallback = callbackId
+        try {
+            listenOnce.launch(intent)
+        } catch (e: ActivityNotFoundException) {
+            pendingListenCallback = null
+            clonerCallback(callbackId, JSONObject().put("text", "").put("error", getString(R.string.voice_unavailable)).toString())
+        }
+    }
+
+    // ----- Tools -----
+
+    override fun clonerHomeTools(): String = ClonerBridge.toolsJson(homeSetup?.tools.orEmpty())
+
+    override fun clonerAddTools(idsJson: String, profession: String) = runOnUiThread {
+        val ids = try {
+            JSONArray(idsJson).let { a -> (0 until a.length()).map { a.getString(it) } }
+        } catch (e: Exception) {
+            emptyList()
+        }
+        if (ids.isEmpty()) return@runOnUiThread
+        val base = homeSetup ?: HomeSetup(profession.ifBlank { getString(R.string.cloner_title) }, emptyList())
+        val setup = base.plus(ids)
+        if (setup.toolIds.isEmpty()) return@runOnUiThread
+        saveHomeSetup(setup)
+    }
+
+    override fun clonerRemoveTool(id: String) = runOnUiThread {
+        val setup = homeSetup ?: return@runOnUiThread
+        saveHomeSetup(setup.minus(id))
+    }
+
+    private fun saveHomeSetup(setup: HomeSetup) {
+        homeSetup = setup
+        prefs.edit().putString(homeSetupPrefKey(), setup.encode()).apply()
+        accountUid?.let { cloud.saveHomeSetup(it, setup.encode()) }
+        renderHomeApps()
+    }
+
+    // ----- Teaching with files and folders -----
+
+    override fun clonerPickFiles(callbackId: String, folder: Boolean) = runOnUiThread {
+        pendingPickCallback = callbackId
+        try {
+            if (folder) pickFolder.launch(null) else pickDocuments.launch(arrayOf("*/*"))
+        } catch (e: ActivityNotFoundException) {
+            pendingPickCallback = null
+            clonerCallback(callbackId, JSONObject().put("files", JSONArray()).put("error", getString(R.string.cloner_no_picker)).toString())
+        }
+    }
+
+    /** Every file inside a folder the user picked (and its sub-folders), up to [MAX_IMPORT]. */
+    private fun filesInTree(tree: Uri): List<PickedFile> {
+        val out = mutableListOf<PickedFile>()
+        val rootId = try { DocumentsContract.getTreeDocumentId(tree) } catch (e: Exception) { return out }
+        val pending = ArrayDeque(listOf(rootId to ""))
+        val cols = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE,
+        )
+        while (pending.isNotEmpty() && out.size < MAX_IMPORT) {
+            val (docId, path) = pending.removeFirst()
+            val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId)
+            try {
+                contentResolver.query(children, cols, null, null, null)?.use { c ->
+                    while (c.moveToNext() && out.size < MAX_IMPORT) {
+                        val id = c.getString(0)
+                        val name = c.getString(1) ?: continue
+                        val mime = c.getString(2)
+                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            pending.add(id to (if (path.isEmpty()) name else "$path/$name"))
+                        } else {
+                            val size = if (c.isNull(3)) -1L else c.getLong(3)
+                            out.add(PickedFile(DocumentsContract.buildDocumentUriUsingTree(tree, id), name, mime, size, path))
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // An unreadable folder: skip it.
+            }
+        }
+        return out
+    }
+
+    /**
+     * Copies what the user picked into their Arrow Files ("arrow cloner" folder, with a cloud copy)
+     * and reads the words in each file, so the worker can learn from it.
+     */
+    private fun importForCloner(picked: List<PickedFile>, folder: Boolean) {
+        val callback = pendingPickCallback ?: return
+        pendingPickCallback = null
+        if (picked.isEmpty()) {
+            clonerCallback(callback, JSONObject().put("files", JSONArray()).put("folder", folder).toString())
+            return
+        }
+        toast(getString(R.string.cloner_importing, picked.size))
+        val base = getExternalFilesDir(null)
+        clonerWorker.execute {
+            val results = JSONArray()
+            var textBudget = 3_000_000
+            for (p in picked.take(MAX_IMPORT)) {
+                var name = p.name
+                var size = p.size
+                if (name == null || size < 0) {
+                    try {
+                        contentResolver.query(p.uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                            if (c.moveToFirst()) {
+                                if (name == null) name = c.getString(0)
+                                if (size < 0 && !c.isNull(1)) size = c.getLong(1)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // Use what we have.
+                    }
+                }
+                val fileName = ArrowFilesIndex.safeFileName(name ?: "file")
+                val mime = p.mime ?: contentResolver.getType(p.uri) ?: mimeOf(fileName)
+                val entry = JSONObject().put("name", fileName).put("folder", p.folder).put("mime", mime)
+                if (size > MAX_IMPORT_BYTES || base == null) {
+                    results.put(entry.put("skipped", if (base == null) "no storage" else "too big"))
+                    continue
+                }
+                val place = onUi { newFilePlace(CLONER_SOURCE, fileName) }
+                if (place == null) {
+                    results.put(entry.put("skipped", "no storage"))
+                    continue
+                }
+                val target = File(base, place.second)
+                try {
+                    contentResolver.openInputStream(p.uri)?.use { input -> target.outputStream().use { input.copyTo(it) } }
+                        ?: throw IllegalStateException("can't open")
+                } catch (e: Exception) {
+                    target.delete()
+                    results.put(entry.put("skipped", "can't read"))
+                    continue
+                }
+                var text = ""
+                if (ClonerText.canRead(place.first, mime) && target.length() <= MAX_TEXT_FILE_BYTES && textBudget > 0) {
+                    text = ClonerText.read(place.first, mime, target.readBytes()).take(textBudget)
+                    textBudget -= text.length
+                }
+                val file = ArrowFile(
+                    id = UUID.randomUUID().toString(), name = place.first, source = CLONER_SOURCE, kind = FileKind.of(place.first, mime),
+                    mimeType = mime, size = target.length(), savedAt = System.currentTimeMillis(), originUrl = "",
+                    relPath = place.second, status = FileStatus.Ready,
+                )
+                onUi {
+                    files.add(file)
+                    syncFile(file.id)
+                }
+                results.put(
+                    entry.put("name", file.name).put("size", file.size).put("fileId", file.id).put("kind", file.kind.label)
+                        .put("readable", text.isNotEmpty()).put("text", text),
+                )
+            }
+            runOnUiThread {
+                saveFiles()
+                uploadWaitingFiles()
+                if (binding.filesScreen.isVisible) renderFiles()
+            }
+            clonerCallback(callback, JSONObject().put("files", results).put("folder", folder).toString())
+        }
+    }
+
+    /** Runs [block] on the main thread and waits for its answer (only from a background thread). */
+    private fun <T> onUi(block: () -> T): T {
+        val latch = CountDownLatch(1)
+        var result: Result<T>? = null
+        runOnUiThread {
+            result = runCatching(block)
+            latch.countDown()
+        }
+        latch.await()
+        return result!!.getOrThrow()
+    }
+
+    // ----- Teaching by recording the screen -----
+
+    override fun clonerStartRecording(title: String, withAudio: Boolean) = runOnUiThread {
+        if (ScreenRecordService.running) {
+            toast(getString(R.string.cloner_already_recording))
+            return@runOnUiThread
+        }
+        val name = title.trim().ifBlank { getString(R.string.cloner_lesson_default) }
+        val place = newFilePlace(CLONER_SOURCE, "Lesson - ${ArrowFilesIndex.safeFileName(name)}.mp4")
+        val base = getExternalFilesDir(null)
+        if (place == null || base == null) return@runOnUiThread
+        lessonTitle = name
+        lessonRelPath = place.second
+        lessonPath = File(base, place.second).absolutePath
+        if (withAudio && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            recordMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            lessonWithMic = withAudio
+            askForScreenCapture()
+        }
+    }
+
+    private fun askForScreenCapture() {
+        try {
+            screenCapture.launch(getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
+        } catch (e: Exception) {
+            lessonTitle = null
+            clonerEvent("lesson", JSONObject().put("ok", false).put("error", getString(R.string.cloner_record_refused)))
+        }
+    }
+
+    /** Every command and page during a lesson becomes a step the worker can repeat. */
+    private fun recordLessonEvent(event: JSONObject) {
+        if (lessonTitle == null || !ScreenRecordService.running || jobRunning) return
+        if (lessonEvents.length() >= 500) return
+        lessonEvents.put(event.put("at", System.currentTimeMillis()))
+    }
+
+    private fun onLessonRecorded(ok: Boolean, path: String?) {
+        val title = lessonTitle ?: return
+        val relPath = lessonRelPath
+        lessonTitle = null
+        hideWorkerBar()
+        if (recordingWithMic) {
+            recordingWithMic = false
+            if (!userMuted) ensureMicPermissionThenListen(userAsked = false)
+        }
+        val video = path?.let { File(it) }?.takeIf { ok && it.exists() && it.length() > 0 }
+        val data = JSONObject().put("ok", true).put("title", title).put("events", lessonEvents)
+        if (video != null && relPath != null) {
+            val file = ArrowFile(
+                id = UUID.randomUUID().toString(), name = video.name, source = CLONER_SOURCE, kind = FileKind.of(video.name, "video/mp4"),
+                mimeType = "video/mp4", size = video.length(), savedAt = System.currentTimeMillis(), originUrl = "",
+                relPath = relPath, status = FileStatus.Ready,
+            )
+            files.add(file)
+            saveFiles()
+            syncFile(file.id)
+            uploadWaitingFiles()
+            data.put("video", JSONObject().put("fileId", file.id).put("name", file.name).put("size", file.size))
+        } else {
+            path?.let { File(it).delete() }
+            if (lessonEvents.length() == 0) data.put("ok", false).put("error", ScreenRecordService.lastError ?: getString(R.string.cloner_record_empty))
+        }
+        lessonEvents = JSONArray()
+        showCloner()
+        clonerEvent("lesson", data)
+    }
+
+    // ----- Doing a job -----
+
+    override fun clonerRunJob(json: String) = runOnUiThread {
+        val steps = try {
+            val a = JSONObject(json).getJSONArray("steps")
+            (0 until a.length()).map { a.getJSONObject(it) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+        if (steps.isEmpty()) return@runOnUiThread
+        jobHandler.removeCallbacksAndMessages(null)
+        jobSteps = steps
+        jobIndex = -1
+        jobRunning = true
+        hideCloner()
+        nextJobStep(0)
+    }
+
+    override fun clonerJobContinue() = runOnUiThread { if (jobRunning) nextJobStep(0) }
+
+    override fun clonerStopJob() = runOnUiThread { stopJob(finished = false) }
+
+    private fun nextJobStep(delayMs: Long) {
+        jobHandler.removeCallbacksAndMessages(null)
+        jobHandler.postDelayed({
+            if (!jobRunning) return@postDelayed
+            jobIndex++
+            runJobStep()
+        }, delayMs)
+    }
+
+    private fun runJobStep() {
+        val step = jobSteps.getOrNull(jobIndex)
+        if (step == null) {
+            stopJob(finished = true)
+            return
+        }
+        val total = jobSteps.size
+        val label = step.optString("label").ifBlank { step.optString("text").ifBlank { step.optString("title") } }
+        clonerEvent("job", JSONObject().put("event", "step").put("index", jobIndex))
+        val stop: () -> Unit = { stopJob(finished = false) }
+        showWorkerBar(getString(R.string.cloner_job_step, jobIndex + 1, total, label), getString(R.string.cloner_stop), stop)
+        when (step.optString("type")) {
+            "open" -> {
+                val url = step.optString("url")
+                val app = ArrowApp.fromUrl(url)
+                if (app != null) openApp(app, url) else if (url.startsWith("http")) openWebsite(url, step.optString("title").ifBlank { url })
+                nextJobStep(4000)
+            }
+            "cmd" -> {
+                val commands = CommandParser.parseAll(step.optString("text")).filter { it !is Command.Ignored && it !in jobRefused }
+                var delay = 0L
+                commands.forEach { c ->
+                    jobHandler.postDelayed({ if (jobRunning) perform(c) }, delay)
+                    delay += if (c.loadsPage()) 3000L else 900L
+                }
+                // Queue the next step after the commands (the delays above are on the same handler).
+                jobHandler.postDelayed({
+                    if (!jobRunning) return@postDelayed
+                    jobIndex++
+                    runJobStep()
+                }, delay + 600)
+            }
+            "type" -> {
+                web.type(step.optString("text"), step.optBoolean("submit")) { ok ->
+                    if (!jobRunning) return@type
+                    if (ok) {
+                        nextJobStep(1500)
+                    } else {
+                        // Let the person put the cursor in the box, then try the same step again.
+                        confirm(getString(R.string.cloner_your_turn))
+                        showWorkerBar(getString(R.string.cloner_type_failed), getString(R.string.cloner_stop), stop, getString(R.string.cloner_try_again)) {
+                            jobIndex--
+                            nextJobStep(0)
+                        }
+                    }
+                }
+            }
+            "you" -> {
+                confirm(getString(R.string.cloner_your_turn))
+                showWorkerBar(getString(R.string.cloner_your_turn_text, step.optString("text")), getString(R.string.cloner_stop), stop, getString(R.string.cloner_continue)) {
+                    nextJobStep(0)
+                }
+            }
+            "wait" -> nextJobStep(step.optLong("seconds", 2).coerceIn(0, 60) * 1000)
+            "say" -> {
+                confirm(step.optString("text"))
+                nextJobStep(1500)
+            }
+            // Steps the cloner page does itself (for example reading the web to learn); it calls jobContinue().
+            else -> clonerEvent("job", JSONObject().put("event", "pageStep").put("index", jobIndex).put("step", step))
+        }
+    }
+
+    private fun stopJob(finished: Boolean) {
+        if (!jobRunning) return
+        jobRunning = false
+        jobHandler.removeCallbacksAndMessages(null)
+        hideWorkerBar()
+        if (!finished) confirm(getString(R.string.cloner_job_stopped))
+        showCloner()
+        clonerEvent("job", JSONObject().put("event", "end").put("finished", finished).put("index", jobIndex))
+    }
+
+    // ----- Watch and listen: a video or audio plays on the phone while the mic writes down what it hears -----
+
+    private var heardTitle: String? = null
+    private val heardText = StringBuilder()
+    private var heardMicWasOff = false
+    private var mediaBox: FrameLayout? = null
+    private var mediaVideo: android.widget.VideoView? = null
+
+    private val pickMediaToListen = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val title = pendingListenTitle
+        pendingListenTitle = null
+        if (uri == null || title == null) {
+            showCloner()
+            return@registerForActivityResult
+        }
+        startHearing(title) { playMedia(uri) }
+    }
+    private var pendingListenTitle: String? = null
+    private var pendingHearing: (() -> Unit)? = null
+    private val hearingMicPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val go = pendingHearing
+        pendingHearing = null
+        if (granted && go != null) go() else {
+            heardTitle = null
+            toast(getString(R.string.voice_permission_denied))
+            showCloner()
+        }
+    }
+
+    override fun clonerListenToPage(url: String, title: String) = runOnUiThread {
+        if (!url.startsWith("https://") && !url.startsWith("http://")) return@runOnUiThread
+        startHearing(title) {
+            val app = ArrowApp.fromUrl(url)
+            if (app != null) openApp(app, url) else openWebsite(url, title)
+        }
+    }
+
+    override fun clonerPickAndListen(title: String) = runOnUiThread {
+        pendingListenTitle = title.ifBlank { getString(R.string.cloner_heard_default) }
+        try {
+            pickMediaToListen.launch(arrayOf("video/*", "audio/*"))
+        } catch (e: ActivityNotFoundException) {
+            pendingListenTitle = null
+            toast(getString(R.string.cloner_no_picker))
+        }
+    }
+
+    override fun clonerListenToFile(fileId: String, title: String) = runOnUiThread {
+        val f = files.get(fileId) ?: return@runOnUiThread
+        withLocalCopy(f) {
+            val local = fileOf(f)
+            if (local == null || !local.exists()) {
+                toast(getString(R.string.files_missing))
+                return@withLocalCopy
+            }
+            startHearing(title.ifBlank { f.name }) { playMedia(Uri.fromFile(local)) }
+        }
+    }
+
+    override fun clonerStopListening() = runOnUiThread { stopHearing() }
+
+    /** Turns the mic into a note-taker for [title], then runs [play] to start the video or page. */
+    private fun startHearing(title: String, play: () -> Unit) {
+        if (heardTitle != null) stopHearing()
+        if (ScreenRecordService.running && recordingWithMic) {
+            toast(getString(R.string.cloner_mic_busy))
+            return
+        }
+        val begin = {
+            heardTitle = title
+            heardText.setLength(0)
+            heardMicWasOff = userMuted || !voice.continuous
+            hideCloner()
+            play()
+            if (!voice.continuous) voice.start()
+            voice.paused = false
+            showWorkerBar(getString(R.string.cloner_hearing, title), getString(R.string.cloner_hearing_stop), onStop = { stopHearing() })
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            begin()
+        } else {
+            pendingHearing = begin
+            hearingMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    /** What the mic heard while listening; returns true when it was taken as a note. */
+    private fun hearPhrase(text: String): Boolean {
+        val title = heardTitle ?: return false
+        if (text.isBlank()) return true
+        if (heardText.isNotEmpty()) heardText.append(' ')
+        heardText.append(text.trim())
+        val words = heardText.split(' ').size
+        showWorkerBar(
+            getString(R.string.cloner_hearing_progress, title, words, text.trim().takeLast(80)),
+            getString(R.string.cloner_hearing_stop), onStop = { stopHearing() },
+        )
+        return true
+    }
+
+    /** Plays a video or audio file full screen inside Arrow Os, through the phone's speaker. */
+    private fun playMedia(uri: Uri) {
+        stopMedia()
+        val box = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val video = android.widget.VideoView(this)
+        // Don't fight the mic for the speaker: keep playing while speech recognition listens.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) video.setAudioFocusRequest(android.media.AudioManager.AUDIOFOCUS_NONE)
+        val controller = android.widget.MediaController(this)
+        controller.setAnchorView(video)
+        video.setMediaController(controller)
+        video.setVideoURI(uri)
+        video.setOnPreparedListener { it.start() }
+        video.setOnCompletionListener { handler.postDelayed({ if (heardTitle != null) stopHearing() }, 4000) }
+        video.setOnErrorListener { _, _, _ ->
+            toast(getString(R.string.cloner_cant_play))
+            stopHearing()
+            true
+        }
+        box.addView(video, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        val stop = com.google.android.material.button.MaterialButton(this).apply {
+            text = getString(R.string.cloner_hearing_stop)
+            isAllCaps = false
+            setOnClickListener { stopHearing() }
+        }
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END)
+        val m = (16 * resources.displayMetrics.density).toInt()
+        lp.setMargins(m, m * 2, m, m)
+        box.addView(stop, lp)
+        binding.fullscreenContainer.addView(box, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        binding.fullscreenContainer.isVisible = true
+        mediaBox = box
+        mediaVideo = video
+    }
+
+    private fun stopMedia() {
+        mediaVideo?.stopPlayback()
+        mediaBox?.let { binding.fullscreenContainer.removeView(it) }
+        if (fullscreenView == null) binding.fullscreenContainer.isVisible = false
+        mediaBox = null
+        mediaVideo = null
+    }
+
+    /** Stops listening and keeps what was heard in the brain and in Arrow Files ("Arrow Cloner - Learned"). */
+    private fun stopHearing() {
+        val title = heardTitle ?: return
+        heardTitle = null
+        stopMedia()
+        hideWorkerBar()
+        if (binding.browserScreen.isVisible) binding.webView.evaluateJavascript(
+            "document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null,
+        )
+        if (heardMicWasOff) {
+            voice.stop()
+        }
+        val text = heardText.toString().trim()
+        heardText.setLength(0)
+        val data = JSONObject().put("title", title).put("text", text)
+        if (text.isNotEmpty()) saveLearned("Heard - $title", text)?.let { data.put("fileId", it) }
+        showCloner()
+        clonerEvent("heard", data)
+    }
+
+    // ----- What the worker learned, kept as text files in its own folder -----
+
+    override fun clonerSaveLearned(title: String, text: String) = runOnUiThread { saveLearned(title, text) }
+
+    /** Writes [text] to Arrow Files, "Arrow Cloner - Learned" folder (with a cloud copy). Returns the file id. */
+    private fun saveLearned(title: String, text: String): String? {
+        if (text.isBlank() || accountUid == null) return null
+        val wanted = ArrowFilesIndex.safeFileName(title.take(80)) + ".txt"
+        // Learning the same thing again replaces the old note.
+        files.active.filter { it.source == CLONER_LEARNED && it.name == wanted }.forEach { old ->
+            fileOf(old)?.delete()
+            if (old.inCloud) deleteCloudCopy(old)
+            files.remove(old.id)
+            syncFile(old.id)
+        }
+        val (name, relPath) = newFilePlace(CLONER_LEARNED, wanted) ?: return null
+        val target = File(getExternalFilesDir(null), relPath)
+        return try {
+            target.writeText(text)
+            val file = ArrowFile(
+                id = UUID.randomUUID().toString(), name = name, source = CLONER_LEARNED, kind = FileKind.of(name, "text/plain"),
+                mimeType = "text/plain", size = target.length(), savedAt = System.currentTimeMillis(), originUrl = "",
+                relPath = relPath, status = FileStatus.Ready,
+            )
+            files.add(file)
+            saveFiles()
+            syncFile(file.id)
+            uploadWaitingFiles()
+            file.id
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Files already on the phone (in Arrow Files) that fit [query]: the worker reads these first,
+     * before going to the web. Text is read for documents; videos and audio can be listened to.
+     */
+    override fun clonerPhoneFiles(query: String, callbackId: String) = runOnUiThread {
+        val found = files.related(query, 8).filter { it.status == FileStatus.Ready && it.source != CLONER_LEARNED }
+        clonerWorker.execute {
+            val out = JSONArray()
+            for (f in found) {
+                val local = fileOf(f)
+                var text = ""
+                if (local != null && local.exists() && ClonerText.canRead(f.name, f.mimeType) && local.length() <= MAX_TEXT_FILE_BYTES) {
+                    text = try { ClonerText.read(f.name, f.mimeType, local.readBytes()) } catch (e: Exception) { "" }
+                }
+                out.put(
+                    JSONObject().put("fileId", f.id).put("name", f.name).put("source", f.source).put("kind", f.kind.label)
+                        .put("media", f.kind == FileKind.Video || f.kind == FileKind.Audio).put("text", text),
+                )
+            }
+            clonerCallback(callbackId, JSONObject().put("files", out).toString())
+        }
+    }
+
+    // ----- The worker bar (recording, jobs, way back to the cloner) -----
+
+    private var workerBarStop: (() -> Unit)? = null
+    private var workerBarContinue: (() -> Unit)? = null
+
+    private fun showWorkerBar(text: String, stopLabel: String, onStop: () -> Unit, continueLabel: String? = null, onContinue: (() -> Unit)? = null) {
+        binding.workerBarText.text = text
+        binding.workerBarStop.text = stopLabel
+        workerBarStop = onStop
+        binding.workerBarContinue.isVisible = continueLabel != null
+        binding.workerBarContinue.text = continueLabel.orEmpty()
+        workerBarContinue = onContinue
+        binding.workerBar.isVisible = true
+    }
+
+    private fun hideWorkerBar() {
+        binding.workerBar.isVisible = false
+        workerBarStop = null
+        workerBarContinue = null
     }
 
     private companion object {
@@ -1712,6 +2726,20 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
         const val PREF_HOME_SETUP = "home_setup"
         const val PREF_FILES = "arrow_files"
         const val FILES_COLOR = "#0091B3"
+        const val CLONER_COLOR = "#7C4DFF"
+        /** Waits between WhatsApp Web reconnect tries; the last one repeats until it connects. */
+        val WHATSAPP_RETRY_MS = listOf(2_000L, 4_000L, 8_000L, 15_000L, 30_000L)
+        /** Arrow Files folder for everything taught to Arrow Cloner (uploads and lesson videos). */
+        const val CLONER_SOURCE = "Arrow Cloner - From phone"
+        /** Arrow Files folder for what the worker learned: what it heard, read and was told, as text files. */
+        const val CLONER_LEARNED = "Arrow Cloner - Learned"
+        const val CLONER_PAGE = "file:///android_asset/cloner/index.html"
+        const val MAX_IMPORT = 300
+        const val MAX_IMPORT_BYTES = 25L * 1024 * 1024
+        const val MAX_TEXT_FILE_BYTES = 5L * 1024 * 1024
+        /** A job (or a lesson) may never stop the mic, clear history or open help. */
+        val jobRefused = setOf(Command.StopListening, Command.ClearPrevious, Command.Help)
+        val clonerNames = setOf("arrow cloner", "cloner", "the cloner", "arrow clone", "digital worker", "my digital worker", "my worker", "clone worker", "my clone")
         val previousScrollCommands = setOf(
             Command.ScrollDown, Command.ScrollUp, Command.ScrollTop, Command.ScrollBottom, Command.NextItem, Command.PreviousItem,
         )
@@ -1719,6 +2747,6 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener {
 
     private fun resumeMic() = runOnUiThread {
         // Stay paused while the user is typing a command.
-        if (!binding.commandInput.hasFocus()) voice.paused = false
+        if (!binding.commandInput.hasFocus() && !binding.clonerScreen.isVisible) voice.paused = false
     }
 }

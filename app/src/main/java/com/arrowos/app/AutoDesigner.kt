@@ -62,7 +62,7 @@ object AutoDesigner {
         t("gads", "Google Ads", "https://ads.google.com/", "#FBBC04", "Advertise on Google"),
         t("ganalytics", "Google Analytics", "https://analytics.google.com/", "#E37400", "Website visitors and stats"),
         t("whatsapp", "WhatsApp Web", "https://web.whatsapp.com/", "#25D366", "Chat with customers"),
-        t("whatsapp_business", "WhatsApp Business", "https://business.whatsapp.com/", "#128C7E", "Catalog and customer chat"),
+        t("whatsapp_business", "WhatsApp Business", "https://web.whatsapp.com/", "#128C7E", "WhatsApp Web for your Business account"),
         t("canva", "Canva", "https://www.canva.com/", "#00C4CC", "Design posters, flyers and posts"),
         t("linkedin", "LinkedIn", "https://www.linkedin.com/", "#0A66C2", "Professional network"),
         t("zoom", "Zoom", "https://zoom.us/", "#2D8CFF", "Video calls"),
@@ -352,6 +352,31 @@ object AutoDesigner {
         "Accountant", "Developer", "Salon", "Farmer", "Driver", "Real estate",
     )
 
+    /**
+     * The tool picker's search bar: every catalog tool whose name or purpose matches [query],
+     * best first, plus the tools of a matching business category. Empty query: nothing.
+     */
+    fun searchTools(query: String, limit: Int = 20): List<BusinessTool> {
+        val words = normalizeWords(query)
+        if (words.isEmpty()) return emptyList()
+        val stems = words.map(::stem)
+        val phrase = words.joinToString(" ")
+        val scored = tools.map { tool ->
+            val label = normalizeWords(tool.label)
+            val about = normalizeWords(tool.description)
+            var score = 0
+            if (label.joinToString(" ") == phrase) score += 100
+            if (label.joinToString(" ").startsWith(phrase)) score += 40
+            for (w in stems) {
+                if (label.any { sameWord(stem(it), w) || it.startsWith(w) }) score += 10
+                if (about.any { sameWord(stem(it), w) }) score += 3
+            }
+            tool to score
+        }.filter { it.second > 0 }.sortedByDescending { it.second }.map { it.first }
+        val byCategory = suggest(query).forCategory
+        return (scored + byCategory).distinctBy { it.id }.take(limit)
+    }
+
     fun suggest(input: String): Suggestions {
         val words = normalizeWords(input)
         val scored = if (words.isEmpty()) emptyList() else categories
@@ -420,7 +445,12 @@ object AutoDesigner {
 /** The user's choices from the Auto Designer, saved across launches. */
 data class HomeSetup(val category: String, val toolIds: List<String>) {
 
-    val tools: List<BusinessTool> get() = toolIds.mapNotNull { AutoDesigner.tool(it) }
+    val tools: List<BusinessTool> get() = toolIds.mapNotNull { CustomSites.toolFor(it) }
+
+    /** The same setup with [ids] added at the end (ones already there are kept once). */
+    fun plus(ids: List<String>): HomeSetup = copy(toolIds = (toolIds + ids.filter { CustomSites.toolFor(it) != null }).distinct())
+
+    fun minus(id: String): HomeSetup = copy(toolIds = toolIds - id)
 
     /** The ticked tool the user named ("tap open Canva"), or null. */
     fun findTool(spoken: String): BusinessTool? {
@@ -435,9 +465,61 @@ data class HomeSetup(val category: String, val toolIds: List<String>) {
         fun decode(raw: String?): HomeSetup? {
             if (raw.isNullOrBlank()) return null
             val lines = raw.split("\n", limit = 2)
-            val ids = lines.getOrNull(1).orEmpty().split(",").map { it.trim() }.filter { AutoDesigner.tool(it) != null }
+            val ids = lines.getOrNull(1).orEmpty().split(",").map { it.trim() }.filter { CustomSites.toolFor(it) != null }
             if (ids.isEmpty()) return null
             return HomeSetup(lines[0].trim(), ids)
         }
     }
+}
+
+/**
+ * Websites the user adds from the tool picker's search bar that are not in the catalog,
+ * for example "notion.so" or "app.netlify.com". They are saved in [HomeSetup] as ids like
+ * "site:Netlify|https%3A%2F%2Fapp.netlify.com%2F" (no commas, so the setup can still be split).
+ */
+object CustomSites {
+
+    private const val PREFIX = "site:"
+    private val colors = listOf("#7C4DFF", "#00897B", "#F4511E", "#3949AB", "#C0CA33", "#8E24AA", "#00ACC1", "#6D4C41")
+
+    private fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
+    private fun dec(s: String) = java.net.URLDecoder.decode(s, "UTF-8")
+
+    /** The id for a website called [label] at [address] ("netlify.com" or a full https address). */
+    fun idFor(label: String, address: String): String? {
+        val url = normalizeUrl(address) ?: return null
+        val name = label.trim().ifBlank { hostOf(url) }.take(40)
+        return PREFIX + enc(name) + "|" + enc(url)
+    }
+
+    /** A catalog tool, or the website saved in a custom id, or null. */
+    fun toolFor(id: String): BusinessTool? {
+        AutoDesigner.tool(id)?.let { return it }
+        if (!id.startsWith(PREFIX)) return null
+        val parts = id.removePrefix(PREFIX).split("|")
+        if (parts.size != 2) return null
+        return try {
+            val label = dec(parts[0])
+            val url = normalizeUrl(dec(parts[1])) ?: return null
+            BusinessTool(id, label, url, colors[(label.lowercase().hashCode() and 0x7fffffff) % colors.size], hostOf(url))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** "netlify.com" -> "https://netlify.com/"; anything that isn't an address -> null. */
+    fun normalizeUrl(address: String): String? {
+        val a = address.trim()
+        val withScheme = when {
+            a.startsWith("https://") || a.startsWith("http://") -> a
+            CommandParser.looksLikeAddress(a.lowercase()) -> "https://$a"
+            else -> return null
+        }
+        val host = hostOf(withScheme)
+        if (host.isEmpty() || !host.contains('.') || host.contains(' ')) return null
+        return if (withScheme.removePrefix("https://").removePrefix("http://").contains('/')) withScheme else "$withScheme/"
+    }
+
+    fun hostOf(url: String): String =
+        url.removePrefix("https://").removePrefix("http://").substringBefore('/').substringBefore('?').removePrefix("www.")
 }
