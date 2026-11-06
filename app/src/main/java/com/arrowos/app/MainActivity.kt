@@ -1844,6 +1844,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         }
         binding.clonerWeb.setBackgroundColor(ContextCompat.getColor(this, R.color.bg_dark))
         binding.clonerWeb.addJavascriptInterface(ClonerBridge(this), "ArrowOs")
+        binding.clonerWeb.webChromeClient = WebChromeClient() // lets the page ask "Forget this?"
         binding.clonerWeb.webViewClient = object : WebViewClient() {
             // Links on the cloner page open in Arrow Os's browser, never inside the cloner page.
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {

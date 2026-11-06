@@ -1,1 +1,206 @@
-<!doctype html><title>Arrow Cloner</title>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Arrow Cloner</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- 1. Name the professional -->
+  <section class="screen" id="start" hidden>
+    <div class="hero">
+      <div class="bot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 9V7c0-1.1-.9-2-2-2h-3c0-1.66-1.34-3-3-3S9 3.34 9 5H6c-1.1 0-2 .9-2 2v2c-1.66 0-3 1.34-3 3s1.34 3 3 3v4c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4c1.66 0 3-1.34 3-3s-1.34-3-3-3zM7.5 11.5C7.5 10.67 8.17 10 9 10s1.5.67 1.5 1.5S9.83 13 9 13s-1.5-.67-1.5-1.5zM16 17H8v-2h8v2zm-1-4c-.83 0-1.5-.67-1.5-1.5S14.17 10 15 10s1.5.67 1.5 1.5S15.83 13 15 13z"/></svg></div>
+      <p class="eyebrow">Arrow Cloner</p>
+      <h1>Hi, I'm your digital worker.</h1>
+      <p class="lead">Tell me which professional I should become. I'll read about the work on Arrow Os Google, then you teach me how <em>you</em> do it.</p>
+    </div>
+    <label class="field-label" for="professionInput">What professional should I become?</label>
+    <div class="input-row">
+      <input id="professionInput" type="text" placeholder="For example: Website developer" autocomplete="off" enterkeyhint="go">
+      <button class="icon-btn mic" data-mic="professionInput" aria-label="Speak"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg></button>
+    </div>
+    <div class="chips" id="professionChips"></div>
+    <button class="primary wide" id="professionGo">Find out about this work</button>
+    <p class="small muted" id="startAccount"></p>
+  </section>
+
+  <!-- 2. What the worker found out -->
+  <section class="screen" id="research" hidden>
+    <header class="bar">
+      <button class="icon-btn" data-back aria-label="Back"><svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg></button>
+      <h2 id="researchTitle">Learning…</h2>
+    </header>
+    <div id="researchBusy" class="busy"><span class="spinner"></span><span id="researchBusyText">Searching Arrow Os Google…</span></div>
+    <div id="researchBody" hidden>
+      <article class="card">
+        <p class="summary" id="profileSummary"></p>
+        <div class="cols">
+          <div><h3>What the work is</h3><ul id="profileDuties"></ul></div>
+          <div><h3>Skills it needs</h3><ul id="profileSkills"></ul></div>
+        </div>
+        <div id="profileReqWrap" hidden><h3>Requirements found on the web</h3><ul id="profileReqs"></ul></div>
+      </article>
+      <article class="card">
+        <h3>Logins and payments this work needs</h3>
+        <p class="small muted">I never pay or sign in for you. When a job needs one of these, I ask you first.</p>
+        <ul class="needs-list" id="profileAccounts"></ul>
+      </article>
+      <article class="card" id="profileSourcesCard" hidden>
+        <h3>Where I read this</h3>
+        <ul class="links" id="profileSources"></ul>
+      </article>
+      <div class="row-btns">
+        <button class="ghost" id="seeOnGoogle">See it on Google</button>
+        <button class="primary" id="researchNext">Teach your digital worker</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. The worker's home: Work, Teach, Tools, Brain -->
+  <section class="screen" id="hub" hidden>
+    <header class="bar">
+      <div class="who">
+        <span class="badge-bot"><svg viewBox="0 0 24 24"><path d="M20 9V7c0-1.1-.9-2-2-2h-3c0-1.66-1.34-3-3-3S9 3.34 9 5H6c-1.1 0-2 .9-2 2v2c-1.66 0-3 1.34-3 3s1.34 3 3 3v4c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4c1.66 0 3-1.34 3-3s-1.34-3-3-3zM7.5 11.5C7.5 10.67 8.17 10 9 10s1.5.67 1.5 1.5S9.83 13 9 13s-1.5-.67-1.5-1.5zM16 17H8v-2h8v2zm-1-4c-.83 0-1.5-.67-1.5-1.5S14.17 10 15 10s1.5.67 1.5 1.5S15.83 13 15 13z"/></svg></span>
+        <div><div class="who-name">Arrow Cloner</div><div class="who-role" id="hubRole"></div></div>
+      </div>
+      <button class="ghost small-btn" id="goHome">Arrow Os home</button>
+    </header>
+
+    <div class="setup" id="setupStrip" hidden>
+      <span class="step done">1 Profession</span><span class="step" data-step="teach">2 Teach</span><span class="step" data-step="tools">3 Tools</span><span class="step" data-step="work">4 First job</span>
+    </div>
+
+    <main class="tabs-body">
+      <!-- WORK -->
+      <div class="tab" id="tab-work">
+        <div id="workCompose">
+          <h2>What should I do?</h2>
+          <p class="small muted">Say it like you'd tell a person. Example: “go to WhatsApp, use the images and videos Sarah has sent and make a website in Claude Code”.</p>
+          <div class="input-row tall">
+            <textarea id="taskInput" rows="4" placeholder="Give your digital worker a job…"></textarea>
+            <button class="icon-btn mic" data-mic="taskInput" aria-label="Speak"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg></button>
+          </div>
+          <details class="inspo">
+            <summary>Add an inspiration (optional)</summary>
+            <p class="small muted">A website I should copy the structure of, or a file to follow.</p>
+            <div class="input-row"><input id="inspoUrl" type="url" placeholder="Website, for example sarahsbakery.com" autocomplete="off"></div>
+            <button class="ghost small-btn" id="inspoFile">Or pick a file</button>
+            <p class="small" id="inspoStatus"></p>
+          </details>
+          <button class="primary wide" id="planGo">Do it</button>
+          <div id="jobHistoryWrap" hidden>
+            <h3>Recent jobs</h3>
+            <ul class="history" id="jobHistory"></ul>
+          </div>
+        </div>
+
+        <div id="planView" hidden>
+          <div class="say" id="planSay"></div>
+          <div id="needsWrap">
+            <h3>First, from you</h3>
+            <ul class="needs-list" id="planNeeds"></ul>
+          </div>
+          <h3>Then I will</h3>
+          <ol class="steps" id="planSteps"></ol>
+          <p class="small muted" id="planUsed"></p>
+          <div class="row-btns">
+            <button class="ghost" id="planCancel">Cancel</button>
+            <button class="primary" id="planStart">Start work</button>
+          </div>
+          <p class="small muted" id="planStartHint"></p>
+        </div>
+      </div>
+
+      <!-- TEACH -->
+      <div class="tab" id="tab-teach" hidden>
+        <h2>Teach your digital worker</h2>
+        <p class="small muted">Everything you teach goes into its brain. It uses only that to do your jobs.</p>
+
+        <article class="card">
+          <h3><span class="num">1</span> Record me while I work</h3>
+          <p class="small muted">I record your screen (and your voice) while you work in Arrow Os, and write down every step you take. Next time you ask for the same job, I repeat your steps.</p>
+          <input id="lessonTitle" type="text" placeholder="What are you showing? e.g. Post the daily menu" autocomplete="off">
+          <label class="check"><input type="checkbox" id="lessonVoice" checked> Record my voice too</label>
+          <button class="primary wide" id="lessonStart">Start recording</button>
+        </article>
+
+        <article class="card">
+          <h3><span class="num">2</span> Upload files or a folder</h3>
+          <p class="small muted">Instructions, price lists, notes, Word, PowerPoint and Excel files, web pages… I read the words in them. Pictures and videos are kept in Arrow Files for jobs.</p>
+          <div class="row-btns">
+            <button class="ghost" id="uploadFiles">Upload files</button>
+            <button class="ghost" id="uploadFolder">Upload a folder</button>
+          </div>
+          <p class="small" id="uploadStatus"></p>
+        </article>
+
+        <article class="card">
+          <h3><span class="num">3</span> Learn from YouTube, social media or the web</h3>
+          <div class="input-row tall">
+            <textarea id="learnInput" rows="3" placeholder="e.g. go to YouTube search rich dad poor dad by Robert Kiyosaki and learn about financial literacy"></textarea>
+            <button class="icon-btn mic" data-mic="learnInput" aria-label="Speak"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg></button>
+          </div>
+          <div class="row-btns">
+            <button class="primary" id="learnGo">Learn it</button>
+            <button class="ghost" id="learnWatch">Watch it in Arrow Os</button>
+          </div>
+          <ul class="log" id="learnLog"></ul>
+        </article>
+
+        <article class="card">
+          <h3><span class="num">4</span> Tell it how you do things</h3>
+          <textarea id="noteInput" rows="3" placeholder="e.g. Every website I make has a WhatsApp button and a dark blue header."></textarea>
+          <button class="ghost wide" id="noteSave">Save to its brain</button>
+        </article>
+
+        <div id="lessonsWrap" hidden>
+          <h3>Lessons it learned by watching you</h3>
+          <ul class="items" id="lessonList"></ul>
+        </div>
+        <button class="primary wide next-step" id="teachNext" hidden>Next: pick its tools</button>
+      </div>
+
+      <!-- TOOLS -->
+      <div class="tab" id="tab-tools" hidden>
+        <h2>Its tools</h2>
+        <p class="small muted">Pick the apps and websites your worker may use. They go on your Arrow Os home screen too.</p>
+        <div class="input-row search">
+          <svg viewBox="0 0 24 24" class="search-icon"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+          <input id="toolSearch" type="search" placeholder="Search any tool or type a website" autocomplete="off" enterkeyhint="search">
+        </div>
+        <ul class="tools" id="toolResults"></ul>
+        <h3 id="toolSuggestTitle">Suggested for this work</h3>
+        <ul class="tools" id="toolSuggest"></ul>
+        <h3>On your home screen</h3>
+        <ul class="tools" id="toolHome"></ul>
+        <button class="primary wide next-step" id="toolsNext" hidden>Next: give it a job</button>
+      </div>
+
+      <!-- BRAIN -->
+      <div class="tab" id="tab-brain" hidden>
+        <h2>Its brain</h2>
+        <p class="small muted" id="brainStats"></p>
+        <div class="row-btns">
+          <button class="ghost" id="studyMore">Study more about this work</button>
+          <button class="ghost" id="seeProfile">What it knows about the work</button>
+        </div>
+        <ul class="items" id="brainList"></ul>
+        <button class="ghost wide danger" id="changeProfession">Change profession</button>
+      </div>
+    </main>
+
+    <nav class="tabbar">
+      <button data-tab="work" class="on"><svg viewBox="0 0 24 24"><path d="M20 6h-4V4c0-1.11-.89-2-2-2h-4c-1.11 0-2 .89-2 2v2H4c-1.11 0-1.99.89-1.99 2L2 19c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-6 0h-4V4h4v2z"/></svg>Work</button>
+      <button data-tab="teach"><svg viewBox="0 0 24 24"><path d="M5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82zM12 3 1 9l11 6 9-4.91V17h2V9L12 3z"/></svg>Teach</button>
+      <button data-tab="tools"><svg viewBox="0 0 24 24"><path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/></svg>Tools</button>
+      <button data-tab="brain"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>Brain</button>
+    </nav>
+  </section>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="logic.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

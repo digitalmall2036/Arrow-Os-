@@ -399,7 +399,7 @@
     if (!tw.length) return [];
     var scored = [];
     brain.knowledge.forEach(function (k) {
-      if (k.kind === 'manual') return;
+      if (k.kind === 'manual' || /kept in Arrow Files for jobs\)$/.test(k.text || '')) return; // pictures and videos have no words
       var titleWords = words(k.title);
       var score = 0;
       tw.forEach(function (w) { if (titleWords.indexOf(w) >= 0) score += 3; });
