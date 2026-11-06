@@ -96,6 +96,21 @@ class ClonerToolsTest {
         assertTrue(index.related("the a").isEmpty())
     }
 
+    @Test fun everyWhatsAppLinkBecomesWhatsAppWeb() {
+        assertEquals("https://web.whatsapp.com/", WebLinks.whatsAppWebFor("https://business.whatsapp.com/"))
+        assertEquals("https://web.whatsapp.com/", WebLinks.whatsAppWebFor("https://www.whatsapp.com/download"))
+        assertEquals("https://web.whatsapp.com/send?phone=256700000000", WebLinks.whatsAppWebFor("https://wa.me/256700000000"))
+        assertEquals("https://web.whatsapp.com/send?phone=2567&text=hi", WebLinks.whatsAppWebFor("https://wa.me/2567?text=hi"))
+        assertEquals("https://web.whatsapp.com/send?phone=1&text=a", WebLinks.whatsAppWebFor("whatsapp://send?phone=1&text=a"))
+        assertEquals("https://web.whatsapp.com/send?phone=1", WebLinks.whatsAppWebFor("https://api.whatsapp.com/send?phone=1"))
+        assertEquals("https://web.whatsapp.com/accept?code=AbC", WebLinks.whatsAppWebFor("https://chat.whatsapp.com/AbC"))
+        assertNull(WebLinks.whatsAppWebFor("https://web.whatsapp.com/"))
+        assertNull(WebLinks.whatsAppWebFor("https://faq.whatsapp.com/123"))
+        assertNull(WebLinks.whatsAppWebFor("https://youtube.com/"))
+        assertTrue(WebLinks.isWhatsAppWeb("https://web.whatsapp.com/send?phone=1"))
+        assertTrue(!WebLinks.isWhatsAppWeb("https://whatsapp.com/"))
+    }
+
     private fun zip(vararg entries: Pair<String, String>): ByteArray {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { z ->

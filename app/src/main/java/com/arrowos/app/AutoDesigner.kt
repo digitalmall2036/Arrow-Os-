@@ -62,7 +62,7 @@ object AutoDesigner {
         t("gads", "Google Ads", "https://ads.google.com/", "#FBBC04", "Advertise on Google"),
         t("ganalytics", "Google Analytics", "https://analytics.google.com/", "#E37400", "Website visitors and stats"),
         t("whatsapp", "WhatsApp Web", "https://web.whatsapp.com/", "#25D366", "Chat with customers"),
-        t("whatsapp_business", "WhatsApp Business", "https://web.whatsapp.com/", "#128C7E", "Opens the WhatsApp Business app (or WhatsApp Web)"),
+        t("whatsapp_business", "WhatsApp Business", "https://web.whatsapp.com/", "#128C7E", "WhatsApp Web for your Business account"),
         t("canva", "Canva", "https://www.canva.com/", "#00C4CC", "Design posters, flyers and posts"),
         t("linkedin", "LinkedIn", "https://www.linkedin.com/", "#0A66C2", "Professional network"),
         t("zoom", "Zoom", "https://zoom.us/", "#2D8CFF", "Video calls"),

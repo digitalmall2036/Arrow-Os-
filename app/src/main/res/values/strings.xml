@@ -148,8 +148,7 @@
     <string name="cloner_hearing_stop">Stop and save</string>
     <string name="cloner_cant_play">This file can\'t be played on this phone.</string>
     <string name="cloner_mic_busy">The mic is busy recording a lesson. Stop the lesson first.</string>
-    <string name="wab_title">WhatsApp Business</string>
-    <string name="wab_message">The WhatsApp Business app isn\'t on this phone yet. Install it from the Play Store (free), or use WhatsApp Web inside Arrow Os: open WhatsApp Business on another phone, go to Linked devices and scan the code.</string>
-    <string name="wab_install">Install the app</string>
-    <string name="wab_web">Use WhatsApp Web</string>
+    <string name="wa_connecting">Connecting to WhatsApp…</string>
+    <string name="wa_connecting_text">WhatsApp didn\'t answer yet. Arrow Os tries again in %1$d seconds, and straight away when the internet comes back.</string>
+    <string name="wa_connecting_tip">If this keeps showing, switch between Wi-Fi and mobile data. Some networks block WhatsApp.</string>
 </resources>

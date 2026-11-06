@@ -190,6 +190,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         setupBackHandling()
         setupTts()
         setupCloner()
+        try {
+            getSystemService(android.net.ConnectivityManager::class.java)?.registerDefaultNetworkCallback(networkBack)
+        } catch (e: Exception) {
+            // Without it WhatsApp Web still reconnects on its timer.
+        }
 
         val uid = cloud.uid
         if (uid != null) beginSession(uid) else showSignIn()
@@ -212,6 +217,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         handler.removeCallbacksAndMessages(null)
         unregisterReceiver(downloadDone)
         cloudWorker.shutdown()
+        waHandler.removeCallbacksAndMessages(null)
+        try {
+            getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(networkBack)
+        } catch (e: Exception) {
+        }
         clonerWorker.shutdown()
         brainWriter.shutdown()
         jobHandler.removeCallbacksAndMessages(null)
@@ -280,42 +290,12 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
 
     /** Opens a home screen app straight away, inside Arrow Os. */
     private fun openTool(tool: BusinessTool) {
-        if (tool.id == "whatsapp_business") {
-            openWhatsAppBusiness()
-            return
-        }
         val app = ArrowApp.fromUrl(tool.url)
         if (app != null) openApp(app, tool.url) else openWebsite(tool.url, tool.label)
     }
 
-    /**
-     * WhatsApp Business: the real app when it is installed on the phone. If it isn't, offer to
-     * install it from the Play Store, or to use WhatsApp Web inside Arrow Os (it works for
-     * Business accounts too). business.whatsapp.com is only an advert page and some networks refuse it.
-     */
-    private fun openWhatsAppBusiness() {
-        val launch = packageManager.getLaunchIntentForPackage(WHATSAPP_BUSINESS)
-        if (launch != null) {
-            confirm(getString(R.string.say_opening, "WhatsApp Business"))
-            startActivity(launch)
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.wab_title)
-            .setMessage(R.string.wab_message)
-            .setPositiveButton(R.string.wab_install) { _, _ ->
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$WHATSAPP_BUSINESS")))
-                } catch (e: ActivityNotFoundException) {
-                    openWebsite("https://play.google.com/store/apps/details?id=$WHATSAPP_BUSINESS", "Play Store")
-                }
-            }
-            .setNeutralButton(R.string.wab_web) { _, _ -> openWebsite(WHATSAPP_WEB, "WhatsApp Web") }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
-    }
-
     private fun showHome() {
+        stopWhatsAppRetry()
         hidePrevious()
         hideFiles()
         hideCloner()
@@ -370,6 +350,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
 
             override fun onPageFinished(view: WebView, url: String?) {
                 binding.pageProgress.isVisible = false
+                // WhatsApp Web came up: stop the reconnect timer.
+                if (url != null && url != errorPageUrl && WebLinks.isWhatsAppWeb(url)) stopWhatsAppRetry()
                 if (url != errorPageUrl && previous.updateTitle(url, view.title)) savePrevious()
                 // On a website (not one of the five apps) show the page's name.
                 if (currentApp == null && binding.browserScreen.isVisible) {
@@ -447,7 +429,20 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
 
     /** Keeps every link inside Arrow Os. Returns true when the WebView should NOT load [url] itself. */
     private fun handleUrl(view: WebView, url: String): Boolean {
-        if (url.startsWith("http://") || url.startsWith("https://")) return false
+        // Every WhatsApp link stays in WhatsApp Web, inside Arrow Os.
+        WebLinks.whatsAppWebFor(url)?.let { web ->
+            useUserAgentFor(web)
+            view.loadUrl(web)
+            return true
+        }
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            // Moving into or out of WhatsApp Web needs the other browser name first.
+            if (useUserAgentFor(url)) {
+                view.loadUrl(url)
+                return true
+            }
+            return false
+        }
         if (url.startsWith("intent://")) {
             // Sites try to bounce to the real app; use their web fallback instead.
             val fallback = try {
@@ -498,10 +493,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         pendingAlternatives.clear()
         triedAlternatives = false
         if (freshHistory) resetHistoryOnNextPage = true
-        // WhatsApp Web only works with a computer browser's name; every other site gets the phone one.
-        val wantUa = if (Uri.parse(url).host == "web.whatsapp.com") DESKTOP_UA else phoneUserAgent()
-        if (binding.webView.settings.userAgentString != wantUa) binding.webView.settings.userAgentString = wantUa
-        binding.webView.loadUrl(url)
+        stopWhatsAppRetry()
+        val target = WebLinks.whatsAppWebFor(url) ?: url
+        useUserAgentFor(target)
+        binding.webView.loadUrl(target)
     }
 
     /**
@@ -510,6 +505,11 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
      */
     private fun handleLoadFailure(view: WebView, failed: Uri, errorCode: Int, description: String) {
         val host = failed.host ?: ""
+        if (WebLinks.isWhatsAppWeb(failed.toString())) {
+            // WhatsApp Web never shows the failure page: it waits and reconnects by itself.
+            retryWhatsApp(view, failed.toString())
+            return
+        }
         if (!triedAlternatives) {
             triedAlternatives = true
             pendingAlternatives = WebLinks.alternativesFor(host).filter { it != host }.toMutableList()
@@ -521,6 +521,72 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
             return
         }
         showErrorPage(view, failed.toString(), host, errorCode, description)
+    }
+
+    // ----- WhatsApp Web: keeps reconnecting instead of failing -----
+
+    private val waHandler = Handler(Looper.getMainLooper())
+    private var waRetryUrl: String? = null
+    private var waRetries = 0
+
+    /** Shows a calm "connecting" page and tries WhatsApp Web again, sooner when the internet comes back. */
+    private fun retryWhatsApp(view: WebView, url: String) {
+        if (waRetryUrl != url) waRetries = 0
+        waRetryUrl = url
+        val wait = WHATSAPP_RETRY_MS[minOf(waRetries, WHATSAPP_RETRY_MS.size - 1)]
+        waRetries++
+        val html = """
+            <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>body{background:#0B0F1A;color:#fff;font-family:sans-serif;padding:32px 28px;line-height:1.5;text-align:center}
+            .s{width:44px;height:44px;margin:40px auto 24px;border-radius:50%;border:4px solid #26304A;border-top-color:#25D366;animation:r 1s linear infinite}
+            @keyframes r{to{transform:rotate(360deg)}}h2{color:#25D366;font-weight:600}small{color:#9AA4BF}</style></head>
+            <body><div class="s"></div><h2>${Html.escapeHtml(getString(R.string.wa_connecting))}</h2>
+            <p>${Html.escapeHtml(getString(R.string.wa_connecting_text, (wait / 1000).toInt()))}</p>
+            <small>${Html.escapeHtml(getString(R.string.wa_connecting_tip))}</small></body></html>
+        """.trimIndent()
+        errorPageUrl = url
+        view.loadDataWithBaseURL(null, html, "text/html", "utf-8", url)
+        waHandler.removeCallbacksAndMessages(null)
+        waHandler.postDelayed({ reconnectWhatsApp() }, wait)
+    }
+
+    private fun reconnectWhatsApp() {
+        val url = waRetryUrl ?: return
+        if (!binding.browserScreen.isVisible) return // the user left; try again when they come back
+        waHandler.removeCallbacksAndMessages(null)
+        errorPageUrl = null // this load is the real page again
+        useUserAgentFor(url)
+        binding.webView.loadUrl(url)
+    }
+
+    private fun stopWhatsAppRetry() {
+        waHandler.removeCallbacksAndMessages(null)
+        waRetryUrl = null
+        waRetries = 0
+    }
+
+    /** The internet came back: reconnect WhatsApp Web straight away instead of waiting. */
+    private val networkBack = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) {
+            runOnUiThread { if (waRetryUrl != null) reconnectWhatsApp() }
+        }
+    }
+
+    /**
+     * WhatsApp Web only opens for a computer browser, so it gets one (with this phone's real Chrome
+     * version, so WhatsApp never says the browser is too old). Every other site gets the phone one.
+     * Returns true when the browser name had to change.
+     */
+    private fun useUserAgentFor(url: String): Boolean {
+        val want = if (WebLinks.isWhatsAppWeb(url)) desktopUserAgent() else phoneUserAgent()
+        if (binding.webView.settings.userAgentString == want) return false
+        binding.webView.settings.userAgentString = want
+        return true
+    }
+
+    private fun desktopUserAgent(): String {
+        val chrome = Regex("Chrome/[\\d.]+").find(phoneUserAgent())?.value ?: "Chrome/124.0.0.0"
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) $chrome Safari/537.36"
     }
 
     private fun showErrorPage(view: WebView, url: String, host: String, errorCode: Int, description: String) {
@@ -2606,10 +2672,8 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         const val PREF_FILES = "arrow_files"
         const val FILES_COLOR = "#0091B3"
         const val CLONER_COLOR = "#7C4DFF"
-        const val WHATSAPP_BUSINESS = "com.whatsapp.w4b"
-        const val WHATSAPP_WEB = "https://web.whatsapp.com/"
-        const val DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        /** Waits between WhatsApp Web reconnect tries; the last one repeats until it connects. */
+        val WHATSAPP_RETRY_MS = listOf(2_000L, 4_000L, 8_000L, 15_000L, 30_000L)
         /** Arrow Files folder for everything taught to Arrow Cloner (uploads and lesson videos). */
         const val CLONER_SOURCE = "Arrow Cloner - From phone"
         /** Arrow Files folder for what the worker learned: what it heard, read and was told, as text files. */
