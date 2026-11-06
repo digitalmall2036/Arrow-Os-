@@ -119,4 +119,27 @@
     <string name="signout_title">Sign out?</string>
     <string name="signout_message">Your files stay safe in your account. Sign in again to see them.</string>
     <string name="signout">Sign out</string>
+
+    <!-- Arrow Cloner -->
+    <string name="cloner_title">Arrow Cloner</string>
+    <string name="cloner_record_refused">Screen recording was not allowed, so nothing was recorded.</string>
+    <string name="cloner_record_empty">The lesson was too short to save.</string>
+    <string name="cloner_save_failed">Arrow Cloner could not save what it learned. Is the phone full?</string>
+    <string name="cloner_back_hint">Arrow Cloner is waiting. Sign in or pay here, then go back.</string>
+    <string name="cloner_back">Back to Arrow Cloner</string>
+    <string name="cloner_listen_prompt">Talk to your digital worker</string>
+    <string name="cloner_no_picker">No app on this phone can pick files.</string>
+    <string name="cloner_importing">Teaching Arrow Cloner %1$d file(s)…</string>
+    <string name="cloner_already_recording">A lesson is already being recorded.</string>
+    <string name="cloner_lesson_default">My work</string>
+    <string name="cloner_recording">● Arrow Cloner is recording "%1$s". Do your work, then tap Stop.</string>
+    <string name="cloner_stop_recording">Stop</string>
+    <string name="cloner_job_step">Arrow Cloner · step %1$d of %2$d: %3$s</string>
+    <string name="cloner_stop">Stop</string>
+    <string name="cloner_continue">Continue</string>
+    <string name="cloner_try_again">Try again</string>
+    <string name="cloner_your_turn">Your turn</string>
+    <string name="cloner_your_turn_text">Your turn: %1$s</string>
+    <string name="cloner_type_failed">I couldn\'t find the text box. Tap inside it, then tap Try again and I will type.</string>
+    <string name="cloner_job_stopped">Stopped</string>
 </resources>

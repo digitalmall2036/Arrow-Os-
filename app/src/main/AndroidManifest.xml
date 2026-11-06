@@ -10,6 +10,10 @@
         android:maxSdkVersion="28" />
     <!-- Lets an APK saved in Arrow Files (for example from 9apps) be installed when opened. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Arrow Cloner lessons: the teacher's screen (and voice) is recorded while they show the worker how they work. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!-- Android 11+ package visibility: lets us find the phone's speech and TTS engines. -->
     <queries>
@@ -18,6 +22,9 @@
         </intent>
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
     </queries>
 
@@ -41,6 +48,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Records Arrow Cloner lessons; Android shows its recording icon and a Stop button the whole time. -->
+        <service
+            android:name=".ScreenRecordService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection|microphone" />
 
         <!-- Hands a file from Arrow Files to another app when the user taps Open or Share. -->
         <provider

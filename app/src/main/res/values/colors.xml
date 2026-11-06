@@ -7,4 +7,5 @@
     <color name="text_secondary">#9AA4BF</color>
     <color name="mic_on">#00D1FF</color>
     <color name="mic_off">#6B7590</color>
+    <color name="cloner_bar">#3A1F8F</color>
 </resources>

@@ -24,6 +24,9 @@ jobs:
       - name: Run tests
         run: ./gradlew --no-daemon testDebugUnitTest
 
+      - name: Run Arrow Cloner tests
+        run: node --test tests/cloner/*.test.js
+
       - name: Build APK
         run: ./gradlew --no-daemon assembleDebug
 
