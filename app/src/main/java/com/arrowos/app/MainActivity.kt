@@ -1815,9 +1815,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
             recordingWithMic = true
             voice.stop()
         }
-        showWorkerBar(getString(R.string.cloner_recording, lessonTitle.orEmpty()), getString(R.string.cloner_stop_recording)) {
+        showWorkerBar(getString(R.string.cloner_recording, lessonTitle.orEmpty()), getString(R.string.cloner_stop_recording), onStop = {
             ScreenRecordService.stop(this)
-        }
+        })
         showHome()
     }
     private val recordMicPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -1950,10 +1950,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         if (app != null) openApp(app, url) else openWebsite(url, title.ifBlank { Uri.parse(url).host ?: url })
         // Show the way back while the user signs in, pays or looks around.
         if (!jobRunning && !ScreenRecordService.running) {
-            showWorkerBar(getString(R.string.cloner_back_hint), getString(R.string.cloner_back)) {
+            showWorkerBar(getString(R.string.cloner_back_hint), getString(R.string.cloner_back), onStop = {
                 hideWorkerBar()
                 showCloner()
-            }
+            })
         }
     }
 
