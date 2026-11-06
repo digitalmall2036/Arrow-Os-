@@ -26,6 +26,8 @@
         <intent>
             <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
+        <!-- WhatsApp Business: open the real app when it is installed. -->
+        <package android:name="com.whatsapp.w4b" />
     </queries>
 
     <application

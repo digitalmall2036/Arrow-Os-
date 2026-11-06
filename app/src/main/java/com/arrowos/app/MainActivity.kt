@@ -156,6 +156,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
     private val handler = Handler(Looper.getMainLooper())
 
     private var fullscreenView: View? = null
+
+    /** The browser's own phone user agent (set in setupBrowser), used for every site but WhatsApp Web. */
+    private var phoneUa: String? = null
+    private fun phoneUserAgent(): String = phoneUa ?: binding.webView.settings.userAgentString
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -237,9 +241,13 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         // Arrow Cloner, the digital worker, is always first; Arrow Files comes next.
         val clonerTile = ItemAppTileBinding.inflate(inflater, binding.appGrid, false)
         clonerTile.appIcon.text = ""
-        clonerTile.appIcon.setCompoundDrawablesWithIntrinsicBounds(0, R.drawable.ic_cloner, 0, 0)
-        clonerTile.appIcon.setPadding(0, (18 * resources.displayMetrics.density).toInt(), 0, 0)
-        clonerTile.appIcon.backgroundTintList = ColorStateList.valueOf(Color.parseColor(CLONER_COLOR))
+        // Mj's Arrow AI Cloner logo, in a round tile like the other apps.
+        clonerTile.appIcon.backgroundTintList = null
+        clonerTile.appIcon.background = ContextCompat.getDrawable(this, R.drawable.cloner_logo)
+        clonerTile.appIcon.outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: android.graphics.Outline) = outline.setOval(0, 0, view.width, view.height)
+        }
+        clonerTile.appIcon.clipToOutline = true
         clonerTile.appLabel.text = getString(R.string.cloner_title)
         clonerTile.root.contentDescription = getString(R.string.open_app, getString(R.string.cloner_title))
         clonerTile.root.setOnClickListener { showCloner() }
@@ -272,8 +280,39 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
 
     /** Opens a home screen app straight away, inside Arrow Os. */
     private fun openTool(tool: BusinessTool) {
+        if (tool.id == "whatsapp_business") {
+            openWhatsAppBusiness()
+            return
+        }
         val app = ArrowApp.fromUrl(tool.url)
         if (app != null) openApp(app, tool.url) else openWebsite(tool.url, tool.label)
+    }
+
+    /**
+     * WhatsApp Business: the real app when it is installed on the phone. If it isn't, offer to
+     * install it from the Play Store, or to use WhatsApp Web inside Arrow Os (it works for
+     * Business accounts too). business.whatsapp.com is only an advert page and some networks refuse it.
+     */
+    private fun openWhatsAppBusiness() {
+        val launch = packageManager.getLaunchIntentForPackage(WHATSAPP_BUSINESS)
+        if (launch != null) {
+            confirm(getString(R.string.say_opening, "WhatsApp Business"))
+            startActivity(launch)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.wab_title)
+            .setMessage(R.string.wab_message)
+            .setPositiveButton(R.string.wab_install) { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$WHATSAPP_BUSINESS")))
+                } catch (e: ActivityNotFoundException) {
+                    openWebsite("https://play.google.com/store/apps/details?id=$WHATSAPP_BUSINESS", "Play Store")
+                }
+            }
+            .setNeutralButton(R.string.wab_web) { _, _ -> openWebsite(WHATSAPP_WEB, "WhatsApp Web") }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun showHome() {
@@ -314,6 +353,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
                 .replace("; wv", "")
                 .replace(Regex("Version/\\d+(\\.\\d+)* "), "")
         }
+        phoneUa = binding.webView.settings.userAgentString
 
         // Files (for example APKs from 9apps) download with Android's download manager.
         binding.webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
@@ -458,6 +498,9 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         pendingAlternatives.clear()
         triedAlternatives = false
         if (freshHistory) resetHistoryOnNextPage = true
+        // WhatsApp Web only works with a computer browser's name; every other site gets the phone one.
+        val wantUa = if (Uri.parse(url).host == "web.whatsapp.com") DESKTOP_UA else phoneUserAgent()
+        if (binding.webView.settings.userAgentString != wantUa) binding.webView.settings.userAgentString = wantUa
         binding.webView.loadUrl(url)
     }
 
@@ -2563,6 +2606,10 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         const val PREF_FILES = "arrow_files"
         const val FILES_COLOR = "#0091B3"
         const val CLONER_COLOR = "#7C4DFF"
+        const val WHATSAPP_BUSINESS = "com.whatsapp.w4b"
+        const val WHATSAPP_WEB = "https://web.whatsapp.com/"
+        const val DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         /** Arrow Files folder for everything taught to Arrow Cloner (uploads and lesson videos). */
         const val CLONER_SOURCE = "Arrow Cloner - From phone"
         /** Arrow Files folder for what the worker learned: what it heard, read and was told, as text files. */
