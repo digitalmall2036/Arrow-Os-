@@ -49,6 +49,11 @@ profession, learns how *you* work, and then does jobs inside Arrow Os.
    in for you), then runs the steps inside Arrow Os. Steps only a person can do (picking
    photos, scanning a QR code, approving) show as *Your turn* with a Continue button.
 
+**Audio talker:** anywhere there is a lot to read (what the work is, what it just learned,
+each thing in its brain, each lesson, and a job's plan) there is a **▶ Play audio** button.
+It reads the text out loud with the phone's own voice; tap **■ Stop** to stop. Links are said
+as "a link". It works offline once the phone's text-to-speech voice is installed.
+
 The worker's brain is saved on the phone per account (`files/cloner/<account>.json`). No paid
 AI is used: the planner is rule-based, and creative work (like building a website) is handed
 to the tools you pick, such as Claude Code, with a prompt built from what you taught.

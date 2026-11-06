@@ -1864,11 +1864,29 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
         }
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) = resumeMic()
+            override fun onDone(utteranceId: String?) = spoken(utteranceId, ok = true)
             @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) = resumeMic()
-            override fun onError(utteranceId: String?, errorCode: Int) = resumeMic()
+            override fun onError(utteranceId: String?) = spoken(utteranceId, ok = false)
+            override fun onError(utteranceId: String?, errorCode: Int) = spoken(utteranceId, ok = false)
+            override fun onStop(utteranceId: String?, interrupted: Boolean) = spoken(utteranceId, ok = false)
         })
+    }
+
+    /** One piece of speech ended. Read-aloud pieces are named "read|<id>|<n>|<count>". */
+    private fun spoken(utteranceId: String?, ok: Boolean) {
+        val parts = utteranceId?.split('|')
+        if (parts == null || parts.size != 4 || parts[0] != "read") {
+            resumeMic()
+            return
+        }
+        val last = parts[2] == parts[3]
+        if (ok && !last) return
+        runOnUiThread {
+            if (readingId != parts[1]) return@runOnUiThread
+            readingId = null
+            clonerEvent("reading", JSONObject().put("id", parts[1]).put("state", if (ok) "done" else "stopped"))
+            resumeMic()
+        }
     }
 
     // ---------- Arrow Cloner (the digital worker) ----------
@@ -1996,6 +2014,7 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
 
     private fun hideCloner() {
         if (!binding.clonerScreen.isVisible) return
+        stopReading()
         binding.clonerScreen.isVisible = false
         binding.commandBar.isVisible = true
         hideKeyboard(binding.clonerWeb)
@@ -2053,6 +2072,42 @@ class MainActivity : AppCompatActivity(), VoiceController.Listener, ClonerBridge
     override fun clonerToast(text: String) = runOnUiThread { toast(text) }
 
     override fun clonerSpeak(text: String) = runOnUiThread { confirm(text) }
+
+    /** The text the worker is reading out loud now, by the page's id for it. */
+    private var readingId: String? = null
+
+    override fun clonerReadAloud(text: String, id: String) = runOnUiThread {
+        val engine = tts
+        if (!ttsReady || engine == null) {
+            toast(getString(R.string.cloner_no_voice))
+            clonerEvent("reading", JSONObject().put("id", id).put("state", "stopped"))
+            return@runOnUiThread
+        }
+        val max = (TextToSpeech.getMaxSpeechInputLength() - 100).coerceIn(500, 3000)
+        val chunks = ClonerText.speechChunks(text, max)
+        if (chunks.isEmpty()) {
+            clonerEvent("reading", JSONObject().put("id", id).put("state", "stopped"))
+            return@runOnUiThread
+        }
+        readingId?.let { clonerEvent("reading", JSONObject().put("id", it).put("state", "stopped")) }
+        readingId = id
+        voice.paused = true // don't let the mic hear the worker reading
+        chunks.forEachIndexed { i, chunk ->
+            val mode = if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            engine.speak(chunk, mode, null, "read|$id|${i + 1}|${chunks.size}")
+        }
+        clonerEvent("reading", JSONObject().put("id", id).put("state", "start"))
+    }
+
+    override fun clonerStopReading() = runOnUiThread { stopReading() }
+
+    private fun stopReading() {
+        val id = readingId ?: return
+        readingId = null
+        tts?.stop()
+        clonerEvent("reading", JSONObject().put("id", id).put("state", "stopped"))
+        resumeMic()
+    }
 
     override fun clonerGoHome() = runOnUiThread { showHome() }
 

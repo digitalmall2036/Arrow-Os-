@@ -30,6 +30,8 @@ class ClonerBridge(private val host: Host) {
         fun clonerAddTools(idsJson: String, profession: String)
         fun clonerRemoveTool(id: String)
         fun clonerSpeak(text: String)
+        fun clonerReadAloud(text: String, id: String)
+        fun clonerStopReading()
         fun clonerListen(callbackId: String)
         fun clonerGoHome()
         fun clonerToast(text: String)
@@ -74,6 +76,9 @@ class ClonerBridge(private val host: Host) {
     @JavascriptInterface fun addTools(idsJson: String, profession: String) = host.clonerAddTools(idsJson, profession)
     @JavascriptInterface fun removeTool(id: String) = host.clonerRemoveTool(id)
     @JavascriptInterface fun speak(text: String) = host.clonerSpeak(text)
+    /** Reads a long text out loud; sends a "reading" event when it starts and ends. */
+    @JavascriptInterface fun readAloud(text: String, id: String) = host.clonerReadAloud(text, id)
+    @JavascriptInterface fun stopReading() = host.clonerStopReading()
     @JavascriptInterface fun listen(callbackId: String) = host.clonerListen(callbackId)
     @JavascriptInterface fun goHome() = host.clonerGoHome()
     @JavascriptInterface fun toast(text: String) = host.clonerToast(text)

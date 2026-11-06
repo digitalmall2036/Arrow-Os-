@@ -171,3 +171,12 @@ li.done .tick { background: var(--ok); color: var(--bg); border-color: var(--ok)
 .log li .small-btn { margin-left: 6px; min-height: 30px; }
 .logo-full { display: block; width: min(300px, 80%); margin: 4px auto 6px; border-radius: 22px; background: #fff; padding: 8px; box-shadow: 0 10px 40px rgba(0,145,255,.25); }
 img.badge-bot { background: #fff; object-fit: contain; padding: 2px; }
+
+/* Audio talker: "Play audio" reads the text out loud */
+.audio-btn { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--accent); font-size: 14px; font-weight: 600; cursor: pointer; }
+.audio-btn.small { min-height: 32px; padding: 4px 10px; font-size: 13px; }
+.audio-btn.on { background: var(--accent); color: var(--bg); }
+.audio-row { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+#planSay { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+#planSay > span { flex: 1 1 180px; }
+.log li .audio-btn { margin-left: 6px; }

@@ -708,7 +708,18 @@
     }
   }
 
+  /** What "Play audio" says after learning: a short intro, then each thing it read. */
+  function readAloudText(items) {
+    items = (items || []).filter(function (x) { return x && (x.text || '').trim(); });
+    if (!items.length) return '';
+    var intro = 'I learned ' + items.length + ' new thing' + (items.length === 1 ? '' : 's') + '.';
+    return [intro].concat(items.map(function (x, i) {
+      return 'Number ' + (i + 1) + ', ' + String(x.title || 'untitled').replace(/^(Search|Wikipedia|YouTube): /, '') + '.\n' + x.text.trim();
+    })).join('\n\n');
+  }
+
   var api = {
+    readAloudText: readAloudText,
     words: words, clip: clip, titleCase: titleCase, htmlToText: htmlToText, pageStructure: pageStructure,
     parseDuckDuckGo: parseDuckDuckGo, parseYouTube: parseYouTube,
     PROFESSIONS: PROFESSIONS, professionProfile: professionProfile, addResearch: addResearch,

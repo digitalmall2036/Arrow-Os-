@@ -24,7 +24,18 @@
       jobContinue: function () { }, stopJob: function () { },
       searchTools: function () { return '[]'; }, suggestTools: function () { return '[]'; }, customTool: function () { return ''; },
       homeTools: function () { return '[]'; }, addTools: function () { }, removeTool: function () { },
-      speak: function () { }, listen: function (id) { Cloner.onCallback(id, JSON.stringify({ text: '' })); },
+      speak: function () { },
+      readAloud: function (text, id) {
+        var say = window.speechSynthesis;
+        if (!say) { setTimeout(function () { Cloner.onEvent('reading', JSON.stringify({ id: id, state: 'stopped' })); }, 0); return; }
+        say.cancel();
+        var u = new SpeechSynthesisUtterance(text);
+        u.onend = function () { Cloner.onEvent('reading', JSON.stringify({ id: id, state: 'done' })); };
+        say.speak(u);
+        setTimeout(function () { Cloner.onEvent('reading', JSON.stringify({ id: id, state: 'start' })); }, 0);
+      },
+      stopReading: function () { if (window.speechSynthesis) window.speechSynthesis.cancel(); },
+      listen: function (id) { Cloner.onCallback(id, JSON.stringify({ text: '' })); },
       goHome: function () { }, toast: function (t) { toast(t); }, showFiles: function () { },
       listenToPage: function () { toast('Listening works on the phone.'); }, pickAndListen: function () { toast('Listening works on the phone.'); },
       listenToFile: function () { }, stopListening: function () { }, saveLearned: function () { },
@@ -107,6 +118,50 @@
   function fill(list, items) {
     list.innerHTML = '';
     items.forEach(function (i) { list.appendChild(i); });
+    stopReadingIfGone();
+  }
+
+  // ---------- Audio talker: "Play audio" reads text out loud ----------
+
+  var reading = null; // { id, btn } of the text being read now
+  var readSeq = 0;
+
+  /** A button that reads [getText]() out loud through the phone's speaker, and stops it again. */
+  function audioBtn(getText, extraClass) {
+    var btn = el('button', { class: 'audio-btn ' + (extraClass || ''), type: 'button' });
+    btn.dataset.id = 'read' + (++readSeq);
+    setAudioBtn(btn, false);
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (reading && reading.btn === btn) { OS.stopReading(); return; }
+      var text = (typeof getText === 'function' ? getText() : getText) || '';
+      if (!text.trim()) { toast('There\'s nothing to read yet.'); return; }
+      if (reading) setAudioBtn(reading.btn, false);
+      reading = { id: btn.dataset.id, btn: btn };
+      setAudioBtn(btn, true);
+      OS.readAloud(text, btn.dataset.id);
+    });
+    return btn;
+  }
+
+  function setAudioBtn(btn, on) {
+    btn.classList.toggle('on', on);
+    var small = btn.classList.contains('small');
+    btn.textContent = on ? (small ? '■ Stop' : '■ Stop audio') : (small ? '▶ Play' : '▶ Play audio');
+    btn.setAttribute('aria-label', on ? 'Stop reading out loud' : 'Read this out loud');
+  }
+
+  function onReading(data) {
+    if (!reading || reading.id !== data.id) return;
+    if (data.state === 'done' || data.state === 'stopped') {
+      if (reading.btn.isConnected) setAudioBtn(reading.btn, false);
+      reading = null;
+    }
+  }
+
+  /** Stops the reading when its text leaves the screen. */
+  function stopReadingIfGone() {
+    if (reading && !reading.btn.isConnected) { OS.stopReading(); reading = null; }
   }
 
   function ago(ms) {
@@ -201,6 +256,7 @@
     if (!p) return;
     $('researchTitle').textContent = p.name;
     $('profileSummary').textContent = p.summary;
+    fill($('profileAudio'), [audioBtn(function () { return profileAudio(brain.profile); })]);
     fill($('profileDuties'), p.duties.map(function (d) { return el('li', { text: d }); }));
     fill($('profileSkills'), p.skills.map(function (d) { return el('li', { text: d }); }));
     $('profileReqWrap').hidden = !(p.requirements && p.requirements.length);
@@ -219,6 +275,14 @@
       ]);
     }));
     $('researchNext').textContent = researchFromHub ? 'Done' : 'Teach your digital worker';
+  }
+
+  function profileAudio(p) {
+    if (!p) return '';
+    var parts = [p.name + '.', p.summary, 'What the work is: ' + p.duties.join('. '), 'Skills it needs: ' + p.skills.join('. ')];
+    if (p.requirements && p.requirements.length) parts.push('Requirements found on the web: ' + p.requirements.join('. '));
+    if (p.accounts.length) parts.push('Logins and payments this work needs: ' + p.accounts.map(function (a) { return a.label + '. ' + a.why; }).join('\n'));
+    return parts.join('\n');
   }
 
   $('seeOnGoogle').addEventListener('click', function () {
@@ -294,6 +358,7 @@
       el('div', { class: 'item-head' }, [
         el('span', { class: 'kind lesson', text: 'Lesson' }),
         el('span', { class: 'item-title', text: l.title }),
+        audioBtn(function () { return 'Lesson: ' + l.title + '.\n' + l.steps.map(function (s, i) { return 'Step ' + (i + 1) + '. ' + L.describeStep(s); }).join('\n'); }, 'small'),
         el('button', { class: 'del', text: 'Forget', onclick: function (e) { e.stopPropagation(); forgetItem(l.id, l.title); } }),
       ]),
       el('div', { class: 'item-meta', text: l.steps.length + ' steps' + (l.video ? ' · video in Arrow Files' : '') + ' · ' + ago(l.createdAt) }),
@@ -377,13 +442,17 @@
     var l = L.parseLearn(order);
     if (log) log.innerHTML = '';
     var learned = 0;
+    var got = []; // what was read this time, for "Play audio"
+    var keepOne = function (item) { keep(item); got.push(item); };
     if (!l.query) { logLine(log, 'I didn\'t understand what to learn.', 'bad'); return 0; }
 
     // The phone first: files already in Arrow Files about this.
     var onPhone = (await nativeAsync('phoneFiles', l.query + ' ' + l.topic)).files || [];
     onPhone.forEach(function (f) {
       if (f.text) {
-        L.learn(brain, { kind: 'phone', title: f.name, text: f.text, source: 'on your phone (' + f.source + ')', fileId: f.fileId });
+        var item = { kind: 'phone', title: f.name, text: f.text, source: 'on your phone (' + f.source + ')', fileId: f.fileId };
+        L.learn(brain, item);
+        got.push(item);
         learned++;
         logLine(log, 'Read from your phone: ' + f.name, 'good');
       } else if (f.media && log) {
@@ -398,7 +467,7 @@
       var yt = await fetchPage('https://www.youtube.com/results?hl=en&search_query=' + encodeURIComponent(l.query));
       var videos = yt.ok ? L.parseYouTube(yt.body) : [];
       if (videos.length) {
-        keep({
+        keepOne({
           kind: 'youtube', title: 'YouTube: ' + l.query, source: 'YouTube',
           text: videos.map(function (v) { return v.title + ' (' + v.channel + '): ' + v.description + ' ' + v.url; }).join('\n'),
         });
@@ -415,12 +484,12 @@
     logLine(log, 'Searching Arrow Os Google for “' + about + '”…');
     var results = await webSearch(about);
     if (results.length) {
-      keep({ kind: 'web', title: 'Search: ' + about, source: 'Arrow Os Google', text: results.map(function (r) { return r.title + ': ' + r.snippet; }).join('\n') });
+      keepOne({ kind: 'web', title: 'Search: ' + about, source: 'Arrow Os Google', text: results.map(function (r) { return r.title + ': ' + r.snippet; }).join('\n') });
       learned++;
     }
     var wiki = await wikipedia(l.topic || l.query);
     if (wiki) {
-      keep({ kind: 'web', title: 'Wikipedia: ' + wiki.title, source: wiki.url, text: wiki.extract });
+      keepOne({ kind: 'web', title: 'Wikipedia: ' + wiki.title, source: wiki.url, text: wiki.extract });
       learned++;
       logLine(log, 'Read Wikipedia: ' + wiki.title, 'good');
     }
@@ -430,12 +499,16 @@
       if (!r.ok) continue;
       var page = L.htmlToText(r.body);
       if (page.text.length < 200) continue;
-      keep({ kind: 'web', title: page.title || pages[i].title, source: pages[i].url, text: page.text.slice(0, 20000) });
+      keepOne({ kind: 'web', title: page.title || pages[i].title, source: pages[i].url, text: page.text.slice(0, 20000) });
       learned++;
       logLine(log, 'Read: ' + (page.title || pages[i].title), 'good');
     }
     save();
-    if (learned) logLine(log, 'Done. ' + learned + ' new thing' + (learned === 1 ? '' : 's') + ' in my brain.', 'good');
+    if (learned && log) {
+      var done = el('li', { class: 'good' }, ['Done. ' + learned + ' new thing' + (learned === 1 ? '' : 's') + ' in my brain. ']);
+      done.appendChild(audioBtn(function () { return L.readAloudText(got); }, 'small'));
+      log.appendChild(done);
+    }
     else logLine(log, 'I couldn\'t reach the web. Check the internet and try again.', 'bad');
     return learned;
   }
@@ -558,6 +631,7 @@
         el('div', { class: 'item-head' }, [
           el('span', { class: 'kind ' + x.kind, text: ({ manual: 'Knows', file: 'File', web: 'Web', youtube: 'YouTube', note: 'Your words', heard: 'Heard', phone: 'Phone' })[x.kind] || x.kind }),
           el('span', { class: 'item-title', text: x.title }),
+          audioBtn(function () { return x.title + '.\n' + (x.text || ''); }, 'small'),
           x.kind === 'manual' ? null : el('button', { class: 'del', text: 'Forget', onclick: function (e) { e.stopPropagation(); forgetItem(x.id, x.title); } }),
         ]),
         el('div', { class: 'item-meta', text: (x.source ? x.source + ' · ' : '') + (x.addedAt ? ago(x.addedAt) : 'built in') }),
@@ -607,7 +681,7 @@
     var p = currentPlan;
     $('workCompose').hidden = true;
     $('planView').hidden = false;
-    $('planSay').textContent = p.say;
+    fill($('planSay'), [el('span', { text: p.say }), audioBtn(function () { return planAudio(currentPlan); }, 'small')]);
     $('needsWrap').hidden = !p.needs.length;
     fill($('planNeeds'), p.needs.map(function (n) {
       var li = el('li', { class: n.done ? 'done' : '' });
@@ -626,6 +700,15 @@
     $('planStart').disabled = left > 0 || running;
     $('planStart').textContent = running ? 'Working…' : 'Start work';
     $('planStartHint').textContent = running ? '' : left ? 'Tap Done on each one first (Done also skips it). ' + left + ' left.' : 'Ready when you are.';
+  }
+
+  function planAudio(p) {
+    if (!p) return '';
+    var parts = [p.say];
+    var left = p.needs.filter(function (n) { return !n.done; });
+    if (left.length) parts.push('First, from you: ' + left.map(function (n) { return n.label + '. ' + n.why; }).join('\n'));
+    parts.push('The steps: ' + p.steps.map(function (s, i) { return 'Step ' + (i + 1) + '. ' + L.describeStep(s); }).join('\n'));
+    return parts.join('\n');
   }
 
   function renderSteps() {
@@ -711,6 +794,7 @@
       if (name === 'lesson') onLesson(data);
       else if (name === 'heard') onHeard(data);
       else if (name === 'job') onJob(data);
+      else if (name === 'reading') onReading(data);
       else if (name === 'shown' && screen === 'hub') showTab(tab);
     },
     /** Arrow Os's Back button. Returns true when the page handled it. */

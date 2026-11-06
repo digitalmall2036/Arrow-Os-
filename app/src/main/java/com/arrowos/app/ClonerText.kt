@@ -13,6 +13,33 @@ import java.util.zip.ZipInputStream
  */
 object ClonerText {
 
+    /**
+     * Splits [text] into pieces the phone's voice can say, at most [max] characters each,
+     * breaking at sentence ends where it can. Web links are said as "a link".
+     */
+    fun speechChunks(text: String, max: Int = 3000): List<String> {
+        val clean = text.trim()
+            .replace(Regex("https?://\\S+"), "a link")
+            .replace(Regex("[ \\t]+"), " ")
+            .replace(Regex("\\s*\\n\\s*"), ".\n")
+            .replace(Regex("([.!?:;])\\.\\n"), "\$1\n")
+            .trim()
+        if (clean.isEmpty()) return emptyList()
+        val out = mutableListOf<String>()
+        var rest = clean
+        while (rest.length > max) {
+            val window = rest.substring(0, max)
+            var cut = maxOf(window.lastIndexOf(". "), window.lastIndexOf('\n'), window.lastIndexOf("? "), window.lastIndexOf("! "))
+            if (cut < max / 3) cut = window.lastIndexOf(' ')
+            if (cut <= 0) cut = max - 1
+            out += rest.substring(0, cut + 1).trim()
+            rest = rest.substring(cut + 1).trim()
+        }
+        if (rest.isNotEmpty()) out += rest
+        return out.filter { it.isNotBlank() }
+    }
+
+
     /** At most this many characters are kept from one file. */
     const val MAX_CHARS = 200_000
 

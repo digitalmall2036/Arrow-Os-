@@ -202,3 +202,15 @@ test('logins are remembered; payments for 30 days', () => {
   assert.ok(later.needs.find((n) => n.id === 'login-claude').done);
   assert.ok(!later.needs.find((n) => n.id === 'pay-claude').done);
 });
+
+test('Play audio reads what was learned, one thing after another', () => {
+  assert.strictEqual(L.readAloudText([]), '');
+  const said = L.readAloudText([
+    { title: 'Wikipedia: Rich Dad Poor Dad', text: 'A book about money.' },
+    { title: 'empty', text: '  ' },
+    { title: 'My notes', text: 'Assets put money in your pocket.' },
+  ]);
+  assert.ok(said.startsWith('I learned 2 new things.'));
+  assert.ok(said.includes('Number 1, Rich Dad Poor Dad.\nA book about money.'));
+  assert.ok(said.includes('Number 2, My notes.'));
+});

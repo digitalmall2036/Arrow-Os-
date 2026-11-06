@@ -111,6 +111,19 @@ class ClonerToolsTest {
         assertTrue(!WebLinks.isWhatsAppWeb("https://whatsapp.com/"))
     }
 
+    @Test fun longTextIsSplitForTheVoice() {
+        assertTrue(ClonerText.speechChunks("  \n ").isEmpty())
+        assertEquals(listOf("Title.\nSee a link now."), ClonerText.speechChunks("Title\nSee https://x.com/a?b=1 now."))
+        assertEquals(listOf("Done!\nNext"), ClonerText.speechChunks("Done!\n\nNext"))
+        val long = (1..400).joinToString(" ") { "Sentence number $it is here." }
+        val chunks = ClonerText.speechChunks(long, 500)
+        assertTrue(chunks.size > 10)
+        assertTrue(chunks.all { it.length <= 500 && it.endsWith(".") })
+        assertEquals(long, chunks.joinToString(" "))
+        val noSpaces = "a".repeat(1200)
+        assertEquals(noSpaces, ClonerText.speechChunks(noSpaces, 500).joinToString(""))
+    }
+
     private fun zip(vararg entries: Pair<String, String>): ByteArray {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { z ->
