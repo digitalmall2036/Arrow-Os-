@@ -1,0 +1,66 @@
+name: Build Windows app
+
+on:
+  push:
+    paths:
+      - "windows/**"
+      - ".github/workflows/build-windows.yml"
+  pull_request:
+    paths:
+      - "windows/**"
+      - ".github/workflows/build-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build the .exe files
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist
+
+      - name: Upload .exe files (Actions artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArrowOs-windows
+          path: |
+            windows/dist/ArrowOs-Setup.exe
+            windows/dist/ArrowOs-Portable.exe
+          retention-days: 30
+
+      # On the main branch, also publish the .exe files as the "windows-latest" release
+      # so they can be downloaded straight from the Releases page without unzipping.
+      # (The Android APK uses its own "latest" release.)
+      - name: Publish "windows-latest" release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete windows-latest --cleanup-tag --yes || true
+          gh release create windows-latest dist/ArrowOs-Setup.exe dist/ArrowOs-Portable.exe \
+            --target "$GITHUB_SHA" \
+            --title "Arrow Os for Windows (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Download ArrowOs-Setup.exe to install Arrow Os, or ArrowOs-Portable.exe to run it without installing." \
+            --prerelease
